@@ -1,0 +1,53 @@
+; Generated from proxy/exports.txt by CMake - edit that list, not this file.
+; Each pass-through export jumps straight to the real d3d11.dll. Until the real
+; DLL is loaded, it detours through ResolveAndJump, which loads it outside of
+; DllMain (no loader-lock work) and preserves every argument register.
+
+EXTERN g_origProcs:QWORD
+EXTERN ResorepEnsureLoaded:PROC
+
+.code
+
+ResolveAndJump PROC
+    ; eax = export index. Entry rsp is 8 mod 16; five pushes make it 0 mod 16.
+    push rcx
+    push rdx
+    push r8
+    push r9
+    push rax
+    sub rsp, 60h
+    movdqu xmmword ptr [rsp+20h], xmm0
+    movdqu xmmword ptr [rsp+30h], xmm1
+    movdqu xmmword ptr [rsp+40h], xmm2
+    movdqu xmmword ptr [rsp+50h], xmm3
+    call ResorepEnsureLoaded
+    movdqu xmm0, xmmword ptr [rsp+20h]
+    movdqu xmm1, xmmword ptr [rsp+30h]
+    movdqu xmm2, xmmword ptr [rsp+40h]
+    movdqu xmm3, xmmword ptr [rsp+50h]
+    add rsp, 60h
+    pop rax
+    pop r9
+    pop r8
+    pop rdx
+    pop rcx
+    lea r10, g_origProcs
+    mov r10, qword ptr [r10 + rax*8]
+    jmp r10
+ResolveAndJump ENDP
+
+PASSTHROUGH MACRO name, index
+    LOCAL slow
+name&_stub PROC
+    mov r10, qword ptr [g_origProcs + index*8]
+    test r10, r10
+    jz slow
+    jmp r10
+slow:
+    mov eax, index
+    jmp ResolveAndJump
+name&_stub ENDP
+ENDM
+
+@STUBS@
+END
