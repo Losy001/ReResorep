@@ -34,38 +34,48 @@ ACCENT = (255, 140, 56)
 ACCENT_HI = (255, 196, 110)
 SHADOW = (8, 10, 26)
 
-G0, GAP = 0.20, 0.06
-T = (0.60 - GAP) / 2  # tile size
-TILES = [  # (x, y, colour) for the three original tiles
-    (G0, G0, TILE_DIM),
-    (G0, G0 + T + GAP, TILE),
-    (G0 + T + GAP, G0 + T + GAP, TILE_DIM),
-]
-# The replacement tile: top-right slot, a little larger, centred on the slot horizontally
-# and lifted slightly so it pops out of the grid without leaning right.
-AS = T * 1.16
-AX0 = G0 + T + GAP - (AS - T) / 2
-AY0 = G0 - (AS - T) / 2 - 0.03
+class Layout:
+    """Geometry in unit coordinates. Small sizes (taskbar, title bar) get a bigger grid and
+    less padding so the shapes stay readable instead of shrinking into the background."""
+
+    def __init__(self, size):
+        small = size <= 32
+        self.inset = 0.0 if small else 0.02         # background square margin
+        g0 = 0.14 if small else 0.17                # grid start (and end margin)
+        gap = 0.07 if small else 0.06
+        self.t = (1.0 - 2 * g0 - gap) / 2          # tile size
+        self.tiles = [  # (x, y, colour) for the three original tiles
+            (g0, g0, TILE_DIM),
+            (g0, g0 + self.t + gap, TILE),
+            (g0 + self.t + gap, g0 + self.t + gap, TILE_DIM),
+        ]
+        # The replacement tile: top-right slot, a little larger, centred on the slot
+        # horizontally and lifted slightly so it pops out of the grid without leaning right.
+        self.a_size = self.t * 1.16
+        self.ax = g0 + self.t + gap - (self.a_size - self.t) / 2
+        self.ay = g0 - (self.a_size - self.t) / 2 - 0.03
 
 
-def shade(u, v):
+def shade(u, v, L):
     """Colour (r, g, b, a) at unit coordinates (u, v) in [0, 1]."""
-    if rounded_rect_sdf(u, v, 0.03, 0.03, 0.97, 0.97, 0.22) > 0:
+    if rounded_rect_sdf(u, v, L.inset, L.inset, 1 - L.inset, 1 - L.inset, 0.22) > 0:
         return (0, 0, 0, 0)
     col = lerp(BG_TOP, BG_BOTTOM, min(1.0, max(0.0, (u * 0.35 + v * 0.65))))
-    for x, y, c in TILES:
-        if rounded_rect_sdf(u, v, x, y, x + T, y + T, 0.05) <= 0:
+    for x, y, c in L.tiles:
+        if rounded_rect_sdf(u, v, x, y, x + L.t, y + L.t, 0.05) <= 0:
             col = c
     # Soft drop shadow under the replacement tile.
-    d = rounded_rect_sdf(u, v, AX0 + 0.025, AY0 + 0.035, AX0 + AS + 0.025, AY0 + AS + 0.035, 0.06)
+    ax, ay, s = L.ax, L.ay, L.a_size
+    d = rounded_rect_sdf(u, v, ax + 0.025, ay + 0.035, ax + s + 0.025, ay + s + 0.035, 0.06)
     if d <= 0.03:
         col = lerp(col, SHADOW, 0.55 * min(1.0, (0.03 - d) / 0.03))
-    if rounded_rect_sdf(u, v, AX0, AY0, AX0 + AS, AY0 + AS, 0.06) <= 0:
-        col = lerp(ACCENT_HI, ACCENT, min(1.0, max(0.0, ((u - AX0) + (v - AY0)) / (2 * AS))))
+    if rounded_rect_sdf(u, v, ax, ay, ax + s, ay + s, 0.06) <= 0:
+        col = lerp(ACCENT_HI, ACCENT, min(1.0, max(0.0, ((u - ax) + (v - ay)) / (2 * s))))
     return (*col, 255)
 
 
 def render(size):
+    layout = Layout(size)
     rows = []
     for py in range(size):
         row = bytearray()
@@ -73,7 +83,7 @@ def render(size):
             acc = [0.0, 0.0, 0.0, 0.0]
             for sy in range(SAMPLES):
                 for sx in range(SAMPLES):
-                    r, g, b, a = shade((px + (sx + 0.5) / SAMPLES) / size, (py + (sy + 0.5) / SAMPLES) / size)
+                    r, g, b, a = shade((px + (sx + 0.5) / SAMPLES) / size, (py + (sy + 0.5) / SAMPLES) / size, layout)
                     acc[0] += r * a
                     acc[1] += g * a
                     acc[2] += b * a
@@ -110,8 +120,10 @@ def main(ico_path, preview_path=None):
     with open(ico_path, "wb") as f:
         f.write(header + entries + blobs)
     if preview_path:
-        with open(preview_path, "wb") as f:
-            f.write(dict(images)[256])
+        for size, data in images:
+            if size in (32, 256):
+                with open(preview_path.replace(".png", f"_{size}.png"), "wb") as f:
+                    f.write(data)
 
 
 if __name__ == "__main__":

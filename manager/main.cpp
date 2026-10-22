@@ -64,9 +64,32 @@ std::vector<std::filesystem::path> DroppedFiles(HDROP drop) {
     return files;
 }
 
+// Gives the window its icons at the exact pixel size for its monitor's DPI. The class
+// icon alone is loaded at 96-DPI size, which the taskbar then shows too small.
+void SetWindowIcons(HWND hwnd) {
+    static HICON bigIcon = nullptr, smallIcon = nullptr;
+    const UINT dpi = GetDpiForWindow(hwnd);
+    const HINSTANCE instance = GetModuleHandleW(nullptr);
+    auto load = [&](int metricX, int metricY) {
+        return static_cast<HICON>(LoadImageW(instance, MAKEINTRESOURCEW(1), IMAGE_ICON,
+                                             GetSystemMetricsForDpi(metricX, dpi),
+                                             GetSystemMetricsForDpi(metricY, dpi), LR_DEFAULTCOLOR));
+    };
+    HICON newBig = load(SM_CXICON, SM_CYICON), newSmall = load(SM_CXSMICON, SM_CYSMICON);
+    SendMessageW(hwnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(newBig));
+    SendMessageW(hwnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(newSmall));
+    if (bigIcon) DestroyIcon(bigIcon);
+    if (smallIcon) DestroyIcon(smallIcon);
+    bigIcon = newBig;
+    smallIcon = newSmall;
+}
+
 LRESULT WINAPI WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     if (ImGui_ImplWin32_WndProcHandler(hwnd, msg, wParam, lParam)) return true;
     switch (msg) {
+        case WM_DPICHANGED:
+            SetWindowIcons(hwnd);
+            break;
         case WM_SIZE:
             if (wParam != SIZE_MINIMIZED) {
                 g_resizeWidth = LOWORD(lParam);
@@ -130,6 +153,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     HWND hwnd = CreateWindowExW(WS_EX_ACCEPTFILES, wc.lpszClassName, L"ReResorep - Texture Manager", WS_OVERLAPPEDWINDOW,
                                 CW_USEDEFAULT, CW_USEDEFAULT, int(1280 * scale), int(800 * scale), nullptr, nullptr,
                                 instance, nullptr);
+    SetWindowIcons(hwnd);
     const BOOL dark = TRUE;
     DwmSetWindowAttribute(hwnd, 20 /* DWMWA_USE_IMMERSIVE_DARK_MODE */, &dark, sizeof(dark));
 
