@@ -1,12 +1,17 @@
 // Self-contained checks for the core library. Run: build\bin\core_tests.exe
+#include <windows.h>
+
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <random>
 #include <string>
 #include <vector>
 
 #include "blowfish.h"
 #include "dds.h"
+#include "mod_state.h"
 #include "resorep_crypto.h"
 #include "resorep_hash.h"
 #include "texture_index.h"
@@ -131,6 +136,49 @@ static void TestDdsRoundTrip() {
     }
 }
 
+static void TestCategories() {
+    namespace fs = std::filesystem;
+    wchar_t tmp[MAX_PATH];
+    GetTempPathW(MAX_PATH, tmp);
+    const fs::path root = fs::path(tmp) / L"reresorep_core_test";
+    fs::remove_all(root);
+    for (const wchar_t* dir : {L"ModA/Cat1", L"ModA/Cat2", L"ModB"}) fs::create_directories(root / dir);
+    for (const wchar_t* file : {L"100.dds", L"ModA/Cat1/200.dds", L"ModA/Cat2/300.dds", L"ModB/100~alt.dds",
+                                L"ModB/400.dds", L"ModA/notes.txt"})
+        std::ofstream(root / file) << "x";
+
+    TextureIndex index;
+    index.Scan(root);
+    CHECK(index.size() == 4);
+    CHECK(index.FindExact(100) && index.FindExact(100)->filename() == L"100.dds");  // loose beats ModB
+    CHECK(index.FindExact(300) != nullptr);
+
+    DisabledSet off;
+    off.Set(L"ModA\\Cat2", true);  // a category
+    off.Set(L"100.dds", true);     // a single texture
+    CHECK(off.Save(root));
+    index.Scan(root);
+    CHECK(index.FindExact(300) == nullptr);
+    CHECK(index.FindExact(200) != nullptr);
+    CHECK(index.FindExact(100) && index.FindExact(100)->filename() == L"100~alt.dds");  // falls back to ModB
+
+    DisabledSet loaded;
+    CHECK(loaded.Load(root));
+    CHECK(loaded.IsDisabled(L"moda/cat2"));  // case-insensitive
+    CHECK(loaded.IsEffectivelyDisabled(L"ModA/Cat2/300.dds"));
+    CHECK(!loaded.IsEffectivelyDisabled(L"ModA/Cat1/200.dds"));
+    loaded.Set(L"moda", true);  // whole mod
+    CHECK(loaded.Save(root));
+    index.Scan(root);
+    CHECK(index.FindExact(200) == nullptr && index.size() == 2);
+
+    loaded.Rename(L"ModA", L"Renamed");
+    CHECK(loaded.IsDisabled(L"Renamed") && loaded.IsDisabled(L"Renamed/Cat2") && !loaded.IsDisabled(L"ModA"));
+    loaded.RemoveUnder(L"Renamed");
+    CHECK(!loaded.IsDisabled(L"Renamed/Cat2") && loaded.IsDisabled(L"100.dds"));
+    fs::remove_all(root);
+}
+
 int main() {
     TestBlowfishEcb();
     TestBlowfishCbc();
@@ -138,6 +186,7 @@ int main() {
     TestContainer();
     TestFileNames();
     TestDdsRoundTrip();
+    TestCategories();
     std::printf(g_failures ? "%d check(s) failed\n" : "all checks passed\n", g_failures);
     return g_failures ? 1 : 0;
 }

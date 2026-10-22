@@ -21,6 +21,8 @@ std::optional<std::filesystem::path> PickFolder(HWND owner, const wchar_t* title
 bool MoveToRecycleBin(const std::filesystem::path& path);
 void ShowInExplorer(const std::filesystem::path& path);
 void OpenWithShell(const std::filesystem::path& path);
+// Starts a program with its own folder as working directory. Returns an error message or "".
+std::string LaunchProgram(const std::filesystem::path& exe);
 
 // CompanyName from the file's version resource ("" if none).
 std::wstring FileCompanyName(const std::filesystem::path& path);

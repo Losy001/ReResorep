@@ -85,6 +85,20 @@ void OpenWithShell(const fs::path& path) {
     ShellExecuteW(nullptr, L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 }
 
+std::string LaunchProgram(const fs::path& exe) {
+    if (!fs::exists(exe)) return "Game executable not found";
+    const std::wstring dir = exe.parent_path().wstring();
+    SHELLEXECUTEINFOW info{sizeof(info)};
+    info.fMask = SEE_MASK_NOASYNC | SEE_MASK_FLAG_NO_UI;
+    info.lpVerb = L"open";
+    info.lpFile = exe.c_str();
+    info.lpDirectory = dir.c_str();  // games load data (and our d3d11.dll) relative to their folder
+    info.nShow = SW_SHOWNORMAL;
+    if (ShellExecuteExW(&info)) return {};
+    const DWORD err = GetLastError();
+    return err == ERROR_CANCELLED ? "Start was cancelled" : "Could not start the game (error " + std::to_string(err) + ")";
+}
+
 std::wstring FileCompanyName(const fs::path& path) {
     DWORD ignored = 0;
     const DWORD size = GetFileVersionInfoSizeW(path.c_str(), &ignored);

@@ -18,6 +18,7 @@ add_executable(ReResorep WIN32
     thumbnails.cpp
     win_util.cpp
     manager.manifest
+    app.rc
 )
 target_link_libraries(ReResorep PRIVATE resorep_core imgui d3d11 dxgi d3dcompiler shell32 ole32 version dwmapi)
 set_target_properties(ReResorep PROPERTIES

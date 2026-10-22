@@ -11,7 +11,8 @@ namespace resorep {
 // Returns the hash, or nothing if the name does not follow that pattern.
 std::optional<uint32_t> ParseModFileName(const std::wstring& fileName);
 
-// hash -> file. Built once by scanning a folder (non-recursive, like the original),
+// hash -> file. Built once by scanning the modded folder and its sub-folders (mods and
+// categories), skipping what reresorep_disabled.ini switches off,
 // instead of the original's directory listing per texture creation.
 class TextureIndex {
 public:

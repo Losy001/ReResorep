@@ -90,6 +90,10 @@ int main(int argc, char** argv) {
     WriteFile(dir / L"modded" / (std::to_wstring(encrypted.hash) + L".dds"),
               resorep::EncryptTexture(dds.data(), dds.size(), iv));
     WriteFile(dir / L"modded" / (std::to_wstring(offByOne.hash + 2) + L".dds"), SolidDds(8, 8, 0xFFFFFFFF));
+    const GameTexture categorized = MakeGameTexture(0x135790);
+    fs::create_directories(dir / L"modded" / L"Pack" / L"Weapons");
+    WriteFile(dir / L"modded" / L"Pack" / L"Weapons" / (std::to_wstring(categorized.hash) + L".dds"),
+              SolidDds(8, 8, 0xFF00FFFF));
 
     HMODULE proxy = LoadLibraryW((dir / L"d3d11.dll").c_str());
     CHECK(proxy != nullptr);
@@ -129,6 +133,12 @@ int main(int argc, char** argv) {
     WriteFile(dir / L"modded" / (std::to_wstring(later.hash) + L".dds"), SolidDds(4, 4, 0xFF123456));
     Sleep(1500);
     CHECK(CreateAndGetWidth(dev.Get(), later) == 4);
+
+    // Categories: a mod in a sub-folder applies, and turning the category off stops it.
+    CHECK(CreateAndGetWidth(dev.Get(), categorized) == 8);
+    std::ofstream(dir / L"modded" / L"reresorep_disabled.ini") << "disabled=Pack/Weapons" << std::endl;
+    Sleep(1500);
+    CHECK(CreateAndGetWidth(dev.Get(), categorized) == 64);
 
     // Dumping happens on a worker thread.
     const fs::path dumped = dir / L"original" / (std::to_wstring(untouched.hash) + L".dds");

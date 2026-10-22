@@ -126,8 +126,10 @@ void Runtime::WatchThread() {
         HANDLE handles[2] = {
             FindFirstChangeNotificationW(ModuleDirectory().c_str(), FALSE,
                                          FILE_NOTIFY_CHANGE_LAST_WRITE | FILE_NOTIFY_CHANGE_FILE_NAME),
-            FindFirstChangeNotificationW(modded.c_str(), FALSE,
-                                         FILE_NOTIFY_CHANGE_LAST_WRITE | FILE_NOTIFY_CHANGE_FILE_NAME),
+            // Whole tree: mod/category folders, and reresorep_disabled.ini when categories are toggled.
+            FindFirstChangeNotificationW(modded.c_str(), TRUE,
+                                         FILE_NOTIFY_CHANGE_LAST_WRITE | FILE_NOTIFY_CHANGE_FILE_NAME |
+                                             FILE_NOTIFY_CHANGE_DIR_NAME),
         };
         const DWORD count = handles[1] == INVALID_HANDLE_VALUE ? 1 : 2;
         if (handles[0] == INVALID_HANDLE_VALUE) return;

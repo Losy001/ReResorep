@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(ReResorep LANGUAGES CXX ASM_MASM VERSION 2.0.0)
+project(ReResorep LANGUAGES CXX ASM_MASM RC VERSION 2.0.0)
 
 if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
     message(FATAL_ERROR "ReResorep builds for x64 only (configure with -A x64).")
@@ -18,6 +18,7 @@ set(RERESOREP_BIN ${CMAKE_BINARY_DIR}/bin)
 add_library(resorep_core STATIC
     core/blowfish.cpp
     core/dds.cpp
+    core/mod_state.cpp
     core/resorep_crypto.cpp
     core/settings.cpp
     core/texture_index.cpp

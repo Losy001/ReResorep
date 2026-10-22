@@ -3,6 +3,7 @@
 #include <cwctype>
 #include <system_error>
 
+#include "mod_state.h"
 #include "resorep_hash.h"
 
 namespace resorep {
@@ -25,15 +26,30 @@ std::optional<uint32_t> ParseModFileName(const std::wstring& fileName) {
 
 void TextureIndex::Scan(const std::filesystem::path& folder) {
     files_.clear();
+    DisabledSet disabled;
+    disabled.Load(folder);
+
+    // Sort key of the file currently chosen for each hash.
+    std::unordered_map<uint32_t, std::wstring> chosenKey;
     std::error_code ec;
-    for (std::filesystem::directory_iterator it(folder, ec), end; !ec && it != end; it.increment(ec)) {
+    for (std::filesystem::recursive_directory_iterator it(folder, ec), end; !ec && it != end; it.increment(ec)) {
+        const std::filesystem::path rel = it->path().lexically_relative(folder);
+        if (it->is_directory(ec)) {
+            if (disabled.IsEffectivelyDisabled(rel)) it.disable_recursion_pending();
+            continue;
+        }
         if (!it->is_regular_file(ec)) continue;
-        const std::wstring name = it->path().filename().wstring();
-        if (auto hash = ParseModFileName(name)) {
-            // Several files for one hash: keep the alphabetically first, which is
-            // what the original's sorted std::set lookup returned.
-            auto [pos, inserted] = files_.try_emplace(*hash, it->path());
-            if (!inserted && name < pos->second.filename().wstring()) pos->second = it->path();
+        const auto hash = ParseModFileName(it->path().filename().wstring());
+        if (!hash || disabled.IsDisabled(rel)) continue;
+
+        // Several files for one hash: the first by relative path wins (loose files
+        // before folders sharing a prefix), matching the original's sorted lookup
+        // for files in the root.
+        const std::wstring key = DisabledSet::Key(rel);
+        auto [pos, inserted] = chosenKey.try_emplace(*hash, key);
+        if (inserted || key < pos->second) {
+            pos->second = key;
+            files_[*hash] = it->path();
         }
     }
 }

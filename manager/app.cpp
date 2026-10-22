@@ -9,6 +9,7 @@
 #include <cstring>
 
 #include "dds.h"
+#include "mod_state.h"
 #include "texture_index.h"
 #include "win_util.h"
 
@@ -21,8 +22,14 @@ const ImVec4 kOkColor(0.5f, 0.9f, 0.5f, 1.0f);
 const ImVec4 kDimColor(0.6f, 0.6f, 0.6f, 1.0f);
 const ImVec4 kAccentColor(0.35f, 0.65f, 1.0f, 1.0f);
 constexpr float kDetailsWidth = 340.0f;
+constexpr float kSidebarWidth = 260.0f;
 
 ImTextureID ToTexId(ID3D11ShaderResourceView* srv) { return (ImTextureID)(uintptr_t)srv; }
+
+// The game's textures come out rotated 180 degrees on screen, so every preview is drawn
+// with swapped UVs (mirrored on both X and Y). Display only; files are untouched.
+const ImVec2 kPreviewUv0(1, 1);
+const ImVec2 kPreviewUv1(0, 0);
 
 std::optional<uint32_t> ParseHash(const char* text) {
     if (!*text) return std::nullopt;
@@ -104,9 +111,9 @@ const TextureFile* App::FindSelected() const {
     return nullptr;
 }
 
-void App::OnDropFiles(const std::vector<fs::path>& files) { ImportFiles(files); }
+void App::OnDropFiles(const std::vector<fs::path>& files) { ImportFiles(files, ImportDir()); }
 
-void App::ImportFiles(const std::vector<fs::path>& files) {
+void App::ImportFiles(const std::vector<fs::path>& files, const std::wstring& relDir) {
     int imported = 0;
     std::string error;
     for (const fs::path& file : files) {
@@ -115,15 +122,16 @@ void App::ImportFiles(const std::vector<fs::path>& files) {
             const size_t tilde = name.find(L'~');
             const std::string label =
                 tilde == std::wstring::npos ? "" : WideToUtf8(name.substr(tilde + 1, name.rfind(L'.') - tilde - 1));
-            const std::string e = library_.Import(file, *hash, label, true);
+            const std::string e = library_.Import(file, *hash, label, true, relDir);
             if (e.empty()) ++imported;
             else error = e;
-            thumbs_.Invalidate(library_.TargetPath(*hash, label));
+            thumbs_.Invalidate(library_.TargetPath(*hash, label, relDir));
             continue;
         }
         // Not named after a hash: ask. When a dump is selected, assume it replaces that one.
         PendingImport p;
         p.source = file;
+        p.relDir = relDir;
         if (const TextureFile* sel = FindSelected(); sel && !selection_->isMod)
             snprintf(p.hash, sizeof(p.hash), "%u", sel->hash);
         snprintf(p.label, sizeof(p.label), "%s", WideToUtf8(file.stem().wstring()).c_str());
@@ -134,10 +142,19 @@ void App::ImportFiles(const std::vector<fs::path>& files) {
 }
 
 void App::ToggleEnabled(const TextureFile& file) {
-    const std::string e = library_.SetEnabled(file, !file.enabled);
-    if (e.empty() && selection_ && selection_->path == file.path)
-        selection_->path = (file.enabled ? library_.disabledFolder() : library_.moddedFolder()) / file.path.filename();
-    Status(e, file.enabled ? "Disabled" : "Enabled");
+    Status(library_.SetEnabled(file, file.selfDisabled), file.selfDisabled ? "Turned on" : "Turned off");
+}
+
+bool App::InView(const TextureFile& file) const {
+    switch (modView_) {
+        case ModView::All: return true;
+        case ModView::Loose: return file.relDir.empty();
+        case ModView::Folder: {
+            const std::wstring dir = DisabledSet::Key(file.relDir), view = DisabledSet::Key(viewFolder_);
+            return dir == view || dir.starts_with(view + L"/");
+        }
+    }
+    return true;
 }
 
 void App::ReplaceDump(uint32_t hash) {
@@ -184,6 +201,10 @@ void App::Frame() {
         case Tab::Dumps: {
             const bool mods = tab_ == Tab::Mods;
             mods ? DrawToolbarMods() : DrawToolbarDumps();
+            if (mods) {
+                DrawSidebar();
+                ImGui::SameLine();
+            }
             ImGui::BeginChild("grid", ImVec2(-kDetailsWidth - ImGui::GetStyle().ItemSpacing.x, 0),
                               ImGuiChildFlags_Borders);
             DrawGrid(mods ? library_.mods() : library_.dumps(), mods);
@@ -200,6 +221,7 @@ void App::Frame() {
     ImGui::EndChild();
     DrawStatusBar();
     DrawImportPopup();
+    DrawFolderPopups();
     ImGui::End();
 
     // Actions that rescan the library run here, after nothing points into it any more.
@@ -212,20 +234,179 @@ void App::Frame() {
 
 void App::DrawToolbarMods() {
     if (ImGui::Button("Import .dds...")) {
-        ImportFiles(PickFiles(hwnd_, L"Import modded textures", {{L"DirectDraw Surface", L"*.dds"}}, true));
+        ImportFiles(PickFiles(hwnd_, L"Import modded textures", {{L"DirectDraw Surface", L"*.dds"}}, true),
+                    ImportDir());
     }
-    ImGui::SetItemTooltip("Files named <hash>.dds or <hash>~name.dds are imported directly.\n"
+    ImGui::SetItemTooltip("Imports into the mod/category selected on the left (or as loose textures).\n"
+                          "Files named <hash>.dds or <hash>~name.dds are imported directly.\n"
                           "You can also drag files onto this window.");
     ImGui::SameLine();
     if (ImGui::Button("Open folder")) OpenWithShell(library_.moddedFolder());
     ImGui::SameLine();
-    ImGui::Checkbox("Show disabled", &showDisabled_);
+    ImGui::Checkbox("Show turned off", &showDisabled_);
     ImGui::SameLine();
     ImGui::SetNextItemWidth(160);
     ImGui::InputTextWithHint("##filter", "Filter hash / name", filter_, sizeof(filter_));
     ImGui::SameLine();
     ImGui::SetNextItemWidth(120);
     ImGui::SliderFloat("##size", &thumbSize_, 64.0f, 256.0f, "Size %.0f");
+}
+
+void App::DrawSidebar() {
+    ImGui::BeginChild("sidebar", ImVec2(kSidebarWidth, 0), ImGuiChildFlags_Borders);
+    size_t loose = 0;
+    for (const auto& m : library_.mods()) loose += m.relDir.empty();
+    char text[64];
+    snprintf(text, sizeof(text), "All textures (%zu)", library_.mods().size());
+    if (ImGui::Selectable(text, modView_ == ModView::All)) modView_ = ModView::All;
+    snprintf(text, sizeof(text), "Loose textures (%zu)", loose);
+    if (ImGui::Selectable(text, modView_ == ModView::Loose)) modView_ = ModView::Loose;
+    ImGui::SetItemTooltip("Textures directly in the modded folder, not in any mod.");
+
+    ImGui::SeparatorText("Mods");
+    const auto& folders = library_.folders();
+    if (folders.empty())
+        ImGui::TextWrapped("No mods yet. A mod is a folder; its sub-folders are categories you can turn off.");
+    for (size_t i = 0; i < folders.size();) DrawFolderNode(i);
+
+    ImGui::Spacing();
+    if (ImGui::Button("+ New mod", ImVec2(-1, 0))) {
+        newFolderParent_.clear();
+        newFolderName_[0] = 0;
+        openNewFolderPopup_ = true;
+    }
+    ImGui::EndChild();
+}
+
+void App::DrawFolderNode(size_t& index) {
+    const auto& folders = library_.folders();
+    const ModFolder& f = folders[index];
+    const bool hasChildren = index + 1 < folders.size() && folders[index + 1].depth > f.depth;
+    ImGui::PushID(f.rel.c_str());
+
+    bool on = !f.selfDisabled;
+    if (ImGui::Checkbox("##on", &on)) {
+        const std::wstring rel = f.rel;
+        Defer([this, rel, on] { Status(library_.SetFolderEnabled(rel, on), on ? "Turned on" : "Turned off"); });
+    }
+    ImGui::SetItemTooltip(f.depth == 1 ? "Turn this whole mod on or off" : "Turn this category on or off");
+    ImGui::SameLine(0, 4);
+
+    ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_OpenOnDoubleClick |
+                               ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_DefaultOpen;
+    if (!hasChildren) flags |= ImGuiTreeNodeFlags_Leaf;
+    if (modView_ == ModView::Folder && DisabledSet::Key(viewFolder_) == DisabledSet::Key(f.rel))
+        flags |= ImGuiTreeNodeFlags_Selected;
+    if (!f.enabled) ImGui::PushStyleColor(ImGuiCol_Text, kDimColor);
+    const bool open = ImGui::TreeNodeEx("node", flags, "%s  %zu/%zu", f.name.c_str(), f.active, f.total);
+    if (!f.enabled) ImGui::PopStyleColor();
+    if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) {
+        modView_ = ModView::Folder;
+        viewFolder_ = f.rel;
+    }
+    if (!f.enabled && !f.selfDisabled) ImGui::SetItemTooltip("Off because a folder above it is turned off.");
+
+    if (ImGui::BeginPopupContextItem("ctx")) {
+        const std::wstring rel = f.rel;
+        if (ImGui::MenuItem(f.selfDisabled ? "Turn on" : "Turn off"))
+            Defer([this, rel, on = f.selfDisabled] { Status(library_.SetFolderEnabled(rel, on), "Updated"); });
+        if (ImGui::MenuItem("New category inside...")) {
+            newFolderParent_ = rel;
+            newFolderName_[0] = 0;
+            openNewFolderPopup_ = true;
+        }
+        if (ImGui::MenuItem("Import .dds here..."))
+            Defer([this, rel] {
+                ImportFiles(PickFiles(hwnd_, L"Import modded textures", {{L"DirectDraw Surface", L"*.dds"}}, true), rel);
+            });
+        if (ImGui::MenuItem("Open folder")) OpenWithShell(library_.moddedFolder() / rel);
+        ImGui::Separator();
+        if (ImGui::MenuItem("Move to Recycle Bin...")) {
+            deleteFolder_ = rel;
+            openDeleteFolderPopup_ = true;
+        }
+        ImGui::EndPopup();
+    }
+    ImGui::PopID();
+
+    ++index;
+    if (open) {
+        while (index < folders.size() && folders[index].depth > f.depth) DrawFolderNode(index);
+        ImGui::TreePop();
+    } else {
+        while (index < folders.size() && folders[index].depth > f.depth) ++index;
+    }
+}
+
+void App::DrawMoveMenu(const TextureFile& file) {
+    if (!ImGui::BeginMenu("Move to")) return;
+    auto item = [&](const char* label, const std::wstring& rel, int depth) {
+        ImGui::Indent(float(depth) * 10.0f);
+        const bool current = DisabledSet::Key(rel) == DisabledSet::Key(file.relDir);
+        if (ImGui::MenuItem(label, nullptr, current, !current))
+            Defer([this, file, rel] { Status(library_.MoveTo(file, rel), "Moved"); });
+        ImGui::Unindent(float(depth) * 10.0f);
+    };
+    item("(loose, no mod)", L"", 0);
+    for (const ModFolder& f : library_.folders()) {
+        ImGui::PushID(f.rel.c_str());
+        item(f.name.c_str(), f.rel, f.depth - 1);
+        ImGui::PopID();
+    }
+    ImGui::EndMenu();
+}
+
+void App::DrawFolderPopups() {
+    if (openNewFolderPopup_) {
+        ImGui::OpenPopup("New folder");
+        openNewFolderPopup_ = false;
+    }
+    if (ImGui::BeginPopupModal("New folder", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        if (newFolderParent_.empty()) ImGui::TextUnformatted("Name of the new mod:");
+        else ImGui::Text("New category inside %s:", WideToUtf8(newFolderParent_).c_str());
+        if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+        ImGui::SetNextItemWidth(300);
+        const bool enter =
+            ImGui::InputText("##name", newFolderName_, sizeof(newFolderName_), ImGuiInputTextFlags_EnterReturnsTrue);
+        if (ImGui::Button("Create", ImVec2(120, 0)) || enter) {
+            const std::wstring parent = newFolderParent_;
+            const std::string name = newFolderName_;
+            Defer([this, parent, name] {
+                const std::string e = library_.CreateFolder(parent, name);
+                Status(e, "Created " + name);
+                if (e.empty()) {
+                    modView_ = ModView::Folder;
+                    viewFolder_ = parent.empty() ? Utf8ToWide(name) : parent + L"/" + Utf8ToWide(name);
+                }
+            });
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(120, 0))) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
+
+    if (openDeleteFolderPopup_) {
+        ImGui::OpenPopup("Delete folder");
+        openDeleteFolderPopup_ = false;
+    }
+    if (ImGui::BeginPopupModal("Delete folder", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        size_t count = 0;
+        for (const ModFolder& f : library_.folders())
+            if (DisabledSet::Key(f.rel) == DisabledSet::Key(deleteFolder_)) count = f.total;
+        ImGui::Text("Move \"%s\" and its %zu texture(s) to the Recycle Bin?", WideToUtf8(deleteFolder_).c_str(), count);
+        if (ImGui::Button("Move to Recycle Bin", ImVec2(180, 0))) {
+            const std::wstring rel = deleteFolder_;
+            Defer([this, rel] {
+                Status(library_.DeleteFolder(rel), "Moved to Recycle Bin");
+                if (modView_ == ModView::Folder) modView_ = ModView::All;
+            });
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(120, 0))) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
 }
 
 void App::DrawToolbarDumps() {
@@ -249,11 +430,12 @@ void App::DrawGrid(const std::vector<TextureFile>& files, bool isMod) {
     visible.reserve(files.size());
     for (const auto& f : files) {
         if (isMod && !showDisabled_ && !f.enabled) continue;
+        if (isMod && !InView(f)) continue;
         if (!isMod && hideModdedDumps_ && library_.IsModded(f.hash)) continue;
         if (MatchesFilter(f, filter_)) visible.push_back(&f);
     }
     if (visible.empty()) {
-        ImGui::TextColored(kDimColor, isMod ? "No modded textures yet. Import .dds files or drop them here."
+        ImGui::TextColored(kDimColor, isMod ? "No textures here yet. Import .dds files or drop them here."
                                             : "No dumped textures. Turn on dumping in Settings and play the game.");
         return;
     }
@@ -296,7 +478,7 @@ void App::DrawCard(const TextureFile& file, bool isMod, float size) {
     if (srv && info) {
         const ImVec2 fit = Fit(info->width, info->height, size - 8);
         const ImVec2 a(pos.x + (size - fit.x) * 0.5f, pos.y + (size - fit.y) * 0.5f);
-        dl->AddImage(ToTexId(srv), a, ImVec2(a.x + fit.x, a.y + fit.y), ImVec2(0, 0), ImVec2(1, 1),
+        dl->AddImage(ToTexId(srv), a, ImVec2(a.x + fit.x, a.y + fit.y), kPreviewUv0, kPreviewUv1,
                      (isMod && !file.enabled) ? IM_COL32(255, 255, 255, 70) : IM_COL32_WHITE);
     } else {
         const char* msg = info ? "can't preview" : "loading...";
@@ -305,8 +487,12 @@ void App::DrawCard(const TextureFile& file, bool isMod, float size) {
     }
 
     // Badges
+    const fs::path* active = isMod ? library_.ActiveMod(file.hash) : nullptr;
     if (isMod && !file.enabled)
-        dl->AddText(ImVec2(pos.x + 6, pos.y + 4), IM_COL32(255, 180, 80, 255), "disabled");
+        dl->AddText(ImVec2(pos.x + 6, pos.y + 4), IM_COL32(255, 180, 80, 255),
+                    file.selfDisabled ? "off" : "category off");
+    else if (active && *active != file.path)
+        dl->AddText(ImVec2(pos.x + 6, pos.y + 4), IM_COL32(255, 120, 110, 255), "unused (duplicate)");
     if (!isMod && library_.IsModded(file.hash))
         dl->AddText(ImVec2(pos.x + 6, pos.y + 4), IM_COL32(110, 200, 255, 255), "modded");
     if (info && info->encrypted) {
@@ -334,7 +520,8 @@ void App::DrawCard(const TextureFile& file, bool isMod, float size) {
     if (ImGui::BeginPopupContextItem("ctx")) {
         selection_ = Selection{file.path, isMod};
         if (isMod) {
-            if (ImGui::MenuItem(file.enabled ? "Disable" : "Enable")) Defer([this, file] { ToggleEnabled(file); });
+            if (ImGui::MenuItem(file.selfDisabled ? "Turn on" : "Turn off")) Defer([this, file] { ToggleEnabled(file); });
+            DrawMoveMenu(file);
         } else {
             if (ImGui::MenuItem("Replace with .dds...")) Defer([this, hash = file.hash] { ReplaceDump(hash); });
             if (ImGui::MenuItem("Open in default editor")) OpenWithShell(file.path);
@@ -366,7 +553,7 @@ void App::DrawDetails() {
     ID3D11ShaderResourceView* srv = thumbs_.Get(file->path, 0, &info);
     if (srv && info) {
         const ImVec2 fit = Fit(info->width, info->height, width);
-        ImGui::Image(ToTexId(srv), fit);
+        ImGui::Image(ToTexId(srv), fit, kPreviewUv0, kPreviewUv1);
     } else {
         ImGui::Dummy(ImVec2(width, width * 0.5f));
     }
@@ -380,18 +567,25 @@ void App::DrawDetails() {
         if (info->encrypted) ImGui::TextColored(kAccentColor, "Encrypted (resorep1 pack)");
     }
     ImGui::Text("File size: %s", FormatBytes(file->size).c_str());
+    if (isMod) ImGui::Text("Mod / category: %s", file->relDir.empty() ? "(loose)" : WideToUtf8(file->relDir).c_str());
     ImGui::TextColored(kDimColor, "%s", ToUtf8(file->path.filename()).c_str());
     ImGui::Spacing();
 
     if (isMod) {
-        if (ImGui::Button(file->enabled ? "Disable" : "Enable", ImVec2(width * 0.5f - 4, 0)))
+        if (ImGui::Button(file->selfDisabled ? "Turn on" : "Turn off", ImVec2(width * 0.5f - 4, 0)))
             Defer([this, copy = *file] { ToggleEnabled(copy); });
         ImGui::SameLine();
         if (ImGui::Button("Show in Explorer", ImVec2(-1, 0))) ShowInExplorer(file->path);
+        if (!file->selfDisabled && !file->enabled)
+            ImGui::TextColored(kErrorColor, "Off because its mod or category is turned off.");
         int sameHash = 0;
         for (const auto& m : library_.mods()) sameHash += (m.enabled && m.hash == file->hash);
-        if (sameHash > 1)
-            ImGui::TextColored(kErrorColor, "%d enabled mods share this hash; only the first by name is used.", sameHash);
+        const fs::path* active = library_.ActiveMod(file->hash);
+        if (sameHash > 1 && active) {
+            ImGui::TextColored(kErrorColor, "%d active textures share this hash. The game uses:", sameHash);
+            ImGui::TextWrapped("%s", ToUtf8(active->lexically_relative(library_.moddedFolder())).c_str());
+            ImGui::TextColored(kDimColor, "Turn the others off to choose which one wins.");
+        }
     } else {
         if (ImGui::Button("Replace with .dds...", ImVec2(-1, 0)))
             Defer([this, hash = file->hash] { ReplaceDump(hash); });
@@ -401,14 +595,17 @@ void App::DrawDetails() {
 
         // Side-by-side with the mod that currently replaces it.
         for (const auto& m : library_.mods()) {
-            if (!m.enabled || m.hash != file->hash) continue;
+            const fs::path* active = library_.ActiveMod(file->hash);
+            if (!active || m.path != *active) continue;
             ImGui::SeparatorText("Replaced by");
             const TextureInfo* modInfo = nullptr;
             if (ID3D11ShaderResourceView* modSrv = thumbs_.Get(m.path, 256, &modInfo); modSrv && modInfo)
-                ImGui::Image(ToTexId(modSrv), Fit(modInfo->width, modInfo->height, std::min(width, 256.0f)));
-            ImGui::TextColored(kDimColor, "%s", ToUtf8(m.path.filename()).c_str());
+                ImGui::Image(ToTexId(modSrv), Fit(modInfo->width, modInfo->height, std::min(width, 256.0f)), kPreviewUv0,
+                             kPreviewUv1);
+            ImGui::TextColored(kDimColor, "%s", ToUtf8(m.path.lexically_relative(library_.moddedFolder())).c_str());
             if (ImGui::Button("Go to mod")) {
                 tab_ = Tab::Mods;
+                modView_ = ModView::All;
                 selection_ = Selection{m.path, true};
             }
             break;
@@ -446,7 +643,7 @@ void App::DrawGames() {
         return;
     ImGui::TableSetupColumn("Game", ImGuiTableColumnFlags_WidthStretch, 3.0f);
     ImGui::TableSetupColumn("Status", ImGuiTableColumnFlags_WidthStretch, 1.4f);
-    ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 330.0f);
+    ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 400.0f);
     ImGui::TableHeadersRow();
 
     std::optional<size_t> remove;
@@ -471,16 +668,32 @@ void App::DrawGames() {
         ImGui::TableNextColumn();
         const bool installed = g.status == ProxyStatus::Installed;
         if (g.status != ProxyStatus::Missing) {
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18f, 0.48f, 0.26f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.22f, 0.60f, 0.32f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.15f, 0.40f, 0.22f, 1.0f));
+            if (ImGui::Button("Start")) {
+                const std::string e = LaunchProgram(g.exe);
+                Status(e, "Started " + ToUtf8(g.exe.filename()) +
+                              (installed ? "" : " (ReResorep is not installed for it, so no mods apply)"));
+            }
+            ImGui::PopStyleColor(3);
+            ImGui::SetItemTooltip(installed ? "Launch the game with your mods"
+                                            : "Launch the game (install ReResorep first for mods to apply)");
+            ImGui::SameLine();
+            // These rebuild games_, so they run after the table is drawn.
             if (ImGui::Button(installed ? "Reinstall" : g.status == ProxyStatus::NotInstalled ? "Install" : "Update")) {
-                const std::string e = InstallProxy(g.exe, settings_);
-                Status(e, "Installed into " + ToUtf8(g.exe.parent_path()));
-                RefreshGames();
+                Defer([this, exe = g.exe] {
+                    Status(InstallProxy(exe, settings_), "Installed into " + ToUtf8(exe.parent_path()));
+                    RefreshGames();
+                });
             }
             ImGui::SameLine();
             ImGui::BeginDisabled(g.status == ProxyStatus::NotInstalled);
             if (ImGui::Button("Uninstall")) {
-                Status(UninstallProxy(g.exe), "Removed from " + ToUtf8(g.exe.filename()));
-                RefreshGames();
+                Defer([this, exe = g.exe] {
+                    Status(UninstallProxy(exe), "Removed from " + ToUtf8(exe.filename()));
+                    RefreshGames();
+                });
             }
             ImGui::EndDisabled();
             ImGui::SameLine();
@@ -581,8 +794,8 @@ void App::DrawImportPopup() {
         std::string error;
         for (const PendingImport& p : pendingImports_) {
             const uint32_t hash = *ParseHash(p.hash);
-            const std::string e = library_.Import(p.source, hash, p.label, true);
-            thumbs_.Invalidate(library_.TargetPath(hash, p.label));
+            const std::string e = library_.Import(p.source, hash, p.label, true, p.relDir);
+            thumbs_.Invalidate(library_.TargetPath(hash, p.label, p.relDir));
             if (!e.empty()) error = e;
         }
         Status(error, "Imported " + std::to_string(pendingImports_.size()) + " texture(s)");

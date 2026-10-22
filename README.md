@@ -21,11 +21,34 @@ Existing Resorep texture packs keep working unchanged. That includes `<hash>.dds
 4. To find hashes, open **Settings** and turn on *Mod creator mode* and *Dump textures*, then play.
    The **Dumps** tab fills with the game's textures. Select one and choose *Replace with .dds…*.
 
+### Mods and categories
+
+Group textures into folders inside the modded folder. A top-level folder is a **mod**, and any
+folder inside it is a **category**:
+
+```
+modded/
+  12345.dds                  loose texture
+  Ash Elite/                 mod
+    Uniform/  2233445566.dds category
+    Weapons/  3344556677.dds category
+```
+
+In the **Mods** tab, the sidebar lists every mod and category with an on/off checkbox and an
+"active/total" count. Clicking one shows only its textures, and imports go into it. Right-click
+for *New category*, *Import .dds here*, *Open folder* and *Move to Recycle Bin*. Right-click a
+texture and use *Move to* to put it in a different category. Any texture, category or whole mod can
+be turned off. On/off choices are saved in `modded/reresorep_disabled.ini`, and files are never
+moved, so turning something back on restores it exactly.
+
+If two active textures have the same hash, the game uses the first one by relative path, so loose
+textures beat those in mods. The other copy is labelled *unused (duplicate)*.
+
+The original Resorep only reads loose textures; it ignores sub-folders.
+
 Changes reach a running game within about a second. The proxy watches the modded folder and its
 settings file. Textures the game has already loaded keep their old data until it reloads them
 (for example on the next map load).
-
-Disabling a mod moves it to `modded\disabled\`, which the proxy never reads.
 
 ## Building
 
@@ -57,7 +80,7 @@ The output goes to `build/bin/`: `ReResorep.exe` and `proxy/d3d11.dll`. Ship tha
 ## Layout
 
 - `core/` is shared by the DLL and the GUI: the texture hash, Blowfish and the `resorep1`
-  container, DDS reading and writing, the settings file, and the hash index.
+  container, DDS reading and writing, the settings file, the hash index, and the on/off state of mods and categories.
 - `proxy/` is the `d3d11.dll` proxy. Pass-through exports are generated from `proxy/exports.txt`.
 - `manager/` is the ImGui texture manager.
 - `tests/` has `core_tests` (Blowfish test vectors, hash, DDS round-trip) and `proxy_test`
