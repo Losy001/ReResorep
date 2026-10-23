@@ -25,6 +25,7 @@ struct ManagerSettings {
     bool hideNormals = false;
     bool hideGrayscale = false;
     bool hidePacked = false;
+    bool onlyBlackIce = false;
     std::vector<std::filesystem::path> games;  // game executables
 
     static std::filesystem::path File();

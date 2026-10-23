@@ -99,6 +99,7 @@ private:
     size_t CountMatches(const std::vector<TextureFile>& files) const;
     void DrawSearch(float y);
     TextureKind KindOf(const TextureFile& file) { return analyzer_->Kind(file.path, file.modified, file.size); }
+    bool IsBlackIce(const TextureFile& file);
     void SetLabel(uint32_t hash, const std::string& label);
     void ImportLabels();
     void ExportLabels();

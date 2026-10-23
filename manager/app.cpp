@@ -123,6 +123,15 @@ void App::QueueAnalysis() {
     for (const auto& f : library_.dumps()) KindOf(f);
 }
 
+bool App::IsBlackIce(const TextureFile& file) {
+    // Black Ice palette, on a power-of-two sheet of 256+ (weapon skins), which leaves out UI
+    // icons and loading screens in the same colours.
+    auto pow2 = [](uint32_t v) { return v >= 256 && (v & (v - 1)) == 0; };
+    if (!pow2(file.width) || !pow2(file.height)) return false;
+    const auto traits = analyzer_->Traits(file.path, file.modified, file.size);
+    return traits && traits->icy;
+}
+
 const std::string& App::DisplayLabel(const TextureFile& file) const {
     if (const std::string* user = labels_.Get(file.hash)) return *user;
     return file.label;
@@ -1021,10 +1030,16 @@ void App::DrawViewOptions(bool isMod) {
                           "Grey-looking colour textures (concrete, metal, logos) are not hidden.\n"
                           "Texture types are detected automatically in the background.");
     ImGui::SameLine();
-    changed |= ImGui::Checkbox("Hide packed (blue)", &settings_.hidePacked);
-    ImGui::SetItemTooltip("The blue/cyan textures: several grayscale maps (roughness, AO, masks) packed into\n"
-                          "one texture's colour channels. Not something you see in-game as a picture.\n"
+    changed |= ImGui::Checkbox("Hide packed / masks", &settings_.hidePacked);
+    ImGui::SetItemTooltip("Data textures that are not pictures:\n"
+                          "- the blue/cyan/teal ones: grayscale maps (roughness, AO...) packed into one texture's channels\n"
+                          "- flat red/green/blue material ID masks\n"
                           "Texture types are detected automatically in the background.");
+    ImGui::SameLine();
+    changed |= ImGui::Checkbox("Black Ice only", &settings_.onlyBlackIce);
+    ImGui::SetItemTooltip("Only textures of the Black Ice weapon skin: icy cyan with white highlights and dark\n"
+                          "cracks, on weapon-sized texture sheets. Detected by colour, so a few may be missed\n"
+                          "or slip in.");
 
     ImGui::SameLine(0, 20);
     ImGui::SetNextItemWidth(120);
@@ -1045,6 +1060,7 @@ void App::DrawGrid(const std::vector<TextureFile>& files, bool isMod) {
             if (settings_.hideGrayscale && kind == TextureKind::Grayscale) continue;
             if (settings_.hidePacked && kind == TextureKind::Packed) continue;
         }
+        if (settings_.onlyBlackIce && !IsBlackIce(f)) continue;
         if (MatchesFilter(f)) visible.push_back(&f);
     }
     SortVisible(visible, isMod);
@@ -1058,6 +1074,11 @@ void App::DrawGrid(const std::vector<TextureFile>& files, bool isMod) {
         }
         if (isMod && modView_ != ModView::All)
             ImGui::TextColored(kDimColor, "Only the part selected on the left is searched; pick All textures to search every mod.");
+        return;
+    }
+    if (visible.empty() && settings_.onlyBlackIce && !files.empty()) {
+        ImGui::TextColored(kDimColor, analyzer_->Pending() ? "No Black Ice textures found yet; still analysing textures..."
+                                                           : "No Black Ice textures here. Untick \"Black Ice only\" to see all.");
         return;
     }
     if (visible.empty()) {
@@ -1318,7 +1339,7 @@ void App::DrawDetails() {
     ImGui::Text("Hash: %u", file->hash);
     DrawLabelEditor(*file, width);
     if (!file->label.empty()) ImGui::Text("File name label: %s", file->label.c_str());
-    ImGui::Text("Type: %s", KindName(KindOf(*file)));
+    ImGui::Text("Type: %s%s", KindName(KindOf(*file)), IsBlackIce(*file) ? " (Black Ice skin)" : "");
     if (info) {
         if (!info->error.empty()) ImGui::TextColored(kErrorColor, "%s", info->error.c_str());
         else ImGui::Text("%u x %u, %u mip(s), %s", info->width, info->height, info->mipLevels, FormatName(info->format));
@@ -1366,9 +1387,9 @@ void App::DrawDetails() {
         ImGui::SameLine();
         if (ImGui::Button("Show in Explorer", ImVec2(-1, 0))) ShowInExplorer(file->path);
 
-        // Side-by-side with the mod that currently replaces it.
+        // Side-by-side with the mod that currently replaces it (hash tolerance included).
         for (const auto& m : library_.mods()) {
-            const fs::path* active = library_.ActiveMod(file->hash);
+            const fs::path* active = library_.ModFor(file->hash);
             if (!active || m.path != *active) continue;
             ImGui::SeparatorText("Replaced by");
             const TextureInfo* modInfo = nullptr;

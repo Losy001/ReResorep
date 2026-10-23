@@ -16,7 +16,8 @@
 namespace resorep::ui {
 
 // Packed: several grayscale maps (roughness, AO, masks...) stored in one texture's channels,
-// which in Siege shows as blue/cyan: blue near full, red near zero, the detail mostly in green.
+// which in Siege shows as blue/cyan/teal: blue high, red near zero, the detail mostly in green.
+// Flat red/green/blue material ID masks are counted here too: data, not pictures.
 enum class TextureKind : uint8_t { Unknown, Color, Normal, Grayscale, Packed };
 const char* KindName(TextureKind kind);
 // How many channels a format really stores: 1 (R/A only), 2 (RG, e.g. BC5) or 4.
@@ -25,6 +26,9 @@ int ChannelCount(DXGI_FORMAT format);
 // What the analyser learns about a texture.
 struct TextureTraits {
     TextureKind kind = TextureKind::Unknown;
+    // Colour texture in Siege's Black Ice skin palette: icy cyan with white highlights and
+    // dark cracks. The size check (power-of-two weapon sheets) is up to the caller.
+    bool icy = false;
     // 16x16 "where is the detail" map: luminance edges for colour/grayscale textures,
     // surface tilt for normal maps. A texture and its normal map line up here.
     std::array<uint8_t, 256> detail{};

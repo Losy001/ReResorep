@@ -50,9 +50,12 @@ public:
     const std::vector<TextureFile>& mods() const { return mods_; }
     const std::vector<TextureFile>& dumps() const { return dumps_; }
     const std::vector<ModFolder>& folders() const { return folders_; }  // depth-first order
-    bool IsModded(uint32_t hash) const { return active_.count(hash) != 0; }
-    // The file the proxy will use for this hash, or nullptr.
+    // The active mod file with exactly this hash (the one that wins among duplicates), or nullptr.
     const std::filesystem::path* ActiveMod(uint32_t hash) const;
+    // The mod the proxy uses for a game texture with this hash: exact, or within the original's
+    // +-2 tolerance, tried in the same order as the proxy. nullptr if none.
+    const std::filesystem::path* ModFor(uint32_t gameHash) const;
+    bool IsModded(uint32_t gameHash) const { return ModFor(gameHash) != nullptr; }
     const std::filesystem::path& moddedFolder() const { return modded_; }
     const std::filesystem::path& originalFolder() const { return original_; }
 

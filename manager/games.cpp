@@ -60,6 +60,7 @@ void ManagerSettings::Load() {
     hideNormals = ini.GetBool("ui_hide_normals", false);
     hideGrayscale = ini.GetBool("ui_hide_grayscale", false);
     hidePacked = ini.GetBool("ui_hide_packed", false);
+    onlyBlackIce = ini.GetBool("ui_only_black_ice", false);
     games.clear();
     for (const std::string& g : ini.GetAll("game")) games.emplace_back(Utf8ToWide(g));
 }
@@ -82,6 +83,7 @@ bool ManagerSettings::Save() const {
     ini.SetBool("ui_hide_normals", hideNormals);
     ini.SetBool("ui_hide_grayscale", hideGrayscale);
     ini.SetBool("ui_hide_packed", hidePacked);
+    ini.SetBool("ui_only_black_ice", onlyBlackIce);
     std::vector<std::string> list;
     for (const auto& g : games) list.push_back(WideToUtf8(g.wstring()));
     ini.SetAll("game", list);

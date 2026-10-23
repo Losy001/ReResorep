@@ -137,6 +137,41 @@ int main() {
     CHECK(packed.kind == TextureKind::Packed);
     CHECK(palePink.kind == TextureKind::Color);
     CHECK(greyArt.kind == TextureKind::Color);
+    CHECK(!palePink.icy && !greyArt.icy && !colorA.icy);
+
+    // Black Ice palette: cyan, white highlights and dark cracks (ABGR in memory order).
+    // (Enough dark that blue is not near full almost everywhere, which would make it a packed map.)
+    const HeightFn thirds = [](float u, float) { return u < 0.5f ? 0.0f : u < 0.8f ? 0.5f : 1.0f; };
+    {
+        std::vector<uint8_t> px(kSize * kSize * 4);
+        for (uint32_t y = 0; y < kSize; ++y)
+            for (uint32_t x = 0; x < kSize; ++x) {
+                const float t = thirds((x + 0.5f) / kSize, 0);
+                const uint32_t c = t == 0.0f ? 0xFFE0C040u : t == 0.5f ? 0xFFF8F8F8u : 0xFF101010u;
+                std::memcpy(&px[(y * kSize + x) * 4], &c, 4);
+            }
+        Save(dir / L"blackice.dds", DXGI_FORMAT_R8G8B8A8_UNORM, px, 4);
+    }
+    // Plain cyan with no white or dark: not Black Ice.
+    WriteColor(dir / L"cyan.dds", plates, 0xFFE0C040, 0xFFD0B030);
+    TextureTraits blackIce, plainCyan;
+    CHECK(analyzer.AnalyzeNow(dir / L"blackice.dds", blackIce));
+    CHECK(analyzer.AnalyzeNow(dir / L"cyan.dds", plainCyan));
+    CHECK(blackIce.kind == TextureKind::Color && blackIce.icy);
+    CHECK(!plainCyan.icy);
+    CHECK(plainCyan.kind == TextureKind::Packed);  // flat cyan with nothing else is a packed map
+
+    // Darker packed variant: red empty, blue well above green but not near full.
+    WriteColor(dir / L"darkpacked.dds", plates, 0xFFA05000, 0xFF902000);
+    TextureTraits darkPacked;
+    CHECK(analyzer.AnalyzeNow(dir / L"darkpacked.dds", darkPacked));
+    CHECK(darkPacked.kind == TextureKind::Packed);
+
+    // Material ID mask: flat pure red and green.
+    WriteColor(dir / L"idmask.dds", plates, 0xFF0000FF, 0xFF00FF00);
+    TextureTraits idMask;
+    CHECK(analyzer.AnalyzeNow(dir / L"idmask.dds", idMask));
+    CHECK(idMask.kind == TextureKind::Packed);
 
     const float aa = DetailSimilarity(colorA, normalA), ab = DetailSimilarity(colorA, normalB);
     const float bb = DetailSimilarity(colorB, normalB), ba = DetailSimilarity(colorB, normalA);

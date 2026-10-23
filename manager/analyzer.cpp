@@ -20,7 +20,7 @@ namespace {
 constexpr int kSample = 32;   // GPU sample size
 constexpr int kDetail = 16;   // fingerprint size
 constexpr uint32_t kLoadMax = 64;  // largest mip read from disk for analysis
-constexpr char kCacheMagic[4] = {'R', 'R', 'A', '4'};  // bump when classification changes
+constexpr char kCacheMagic[4] = {'R', 'R', 'A', '6'};  // bump when classification changes
 
 }  // namespace
 
@@ -63,7 +63,7 @@ const char* KindName(TextureKind kind) {
         case TextureKind::Color: return "Color";
         case TextureKind::Normal: return "Normal map";
         case TextureKind::Grayscale: return "Depth / single channel (mask, roughness, height)";
-        case TextureKind::Packed: return "Packed material map (blue)";
+        case TextureKind::Packed: return "Packed material map / ID mask";
         default: return "Not analysed yet";
     }
 }
@@ -84,13 +84,20 @@ TextureTraits AnalyzePixels(const float* rgba, DXGI_FORMAT format) {
         const int c = format == DXGI_FORMAT_A8_UNORM ? 3 : 0;
         for (int i = 0; i < n; ++i) detail[i] = px[i * 4 + c];
     } else {
-        int unitVectors = 0, transparent = 0, blueFull = 0;
+        int unitVectors = 0, transparent = 0, blueFull = 0, redEmpty = 0, flat = 0, primary = 0;
         double meanX = 0, meanY = 0, meanB = 0, blueLift = 0;
         for (int i = 0; i < n; ++i) {
             const float r = px[i * 4], g = px[i * 4 + 1], b = px[i * 4 + 2];
             transparent += px[i * 4 + 3] < 0.9f;
             blueFull += b > 0.8f;
             blueLift += b - std::min(r, g);
+            redEmpty += r < 0.16f;
+            // Every channel off or on (black, white, pure red/green/blue...); "primary" if coloured.
+            auto offOrOn = [](float c) { return c < 0.2f || c > 0.8f; };
+            if (offOrOn(r) && offOrOn(g) && offOrOn(b)) {
+                ++flat;
+                primary += std::max({r, g, b}) - std::min({r, g, b}) > 0.6f;
+            }
             const float x = r * 2 - 1, y = g * 2 - 1;
             meanX += x;
             meanY += y;
@@ -110,9 +117,14 @@ TextureTraits AnalyzePixels(const float* rgba, DXGI_FORMAT format) {
         const bool centred = std::fabs(meanX) < 0.35 && std::fabs(meanY) < 0.35;
         if (channels == 2 && unitVectors > n * 0.95 && centred) t.kind = TextureKind::Normal;
         else if (channels == 4 && unitVectors > n * 0.9 && meanB > 0.6 && centred) t.kind = TextureKind::Normal;
-        // Blue near full and well above red or green. Checked against ~5300 Siege dumps:
-        // white, grey and pale-pink art has blue near full too, but not above the others.
-        else if (channels == 4 && blueFull >= n * 0.9 && blueLift > 0.25 && transparent < n * 0.03)
+        // Packed maps and masks, checked against ~5300 Siege dumps. None of them use alpha.
+        // - Blue near full and well above red or green. White, grey and pale-pink art has blue
+        //   near full too, but not above the others.
+        // - Darker variants of the same: red empty almost everywhere, blue far above the rest.
+        // - Material ID masks: nearly all pixels pure colours, a good part of them red/green/blue.
+        else if (channels == 4 && transparent < n * 0.03 &&
+                 ((blueFull >= n * 0.9 && blueLift > 0.25) || (redEmpty >= n * 0.7 && blueLift > 0.45) ||
+                  (flat >= n * 0.85 && primary >= n * 0.3)))
             t.kind = TextureKind::Packed;
         // Colourless 4-channel textures are not grouped with depth maps: in Siege those are
         // grey art (concrete, metal, logos, icons). The game keeps its single-channel data
@@ -159,6 +171,30 @@ TextureTraits AnalyzePixels(const float* rgba, DXGI_FORMAT format) {
     }
     for (int i = 0; i < kDetail * kDetail; ++i)
         t.detail[i] = peak > 0 ? uint8_t(std::lround(reduced[i] / peak * 255.0f)) : 0;
+
+    if (t.kind == TextureKind::Color) {
+        // Black Ice: at least 20% saturated cyan, 5% near-white and 2% near-black. Checked
+        // against ~5300 Siege dumps together with the caller's size check: it picked out
+        // the Black Ice weapon sheets, and not blue walls, teal UI art or icy loading screens
+        // (those have no dark cracks, or are not power-of-two sized).
+        int cyan = 0, white = 0, dark = 0;
+        for (int i = 0; i < n; ++i) {
+            const float r = px[i * 4], g = px[i * 4 + 1], b = px[i * 4 + 2];
+            const float v = std::max({r, g, b}), lo = std::min({r, g, b});
+            const float s = v > 0 ? (v - lo) / v : 0;
+            dark += v < 0.2f;
+            white += v > 0.85f && s < 0.15f;
+            if (s > 0.25f && v > 0.35f) {
+                float h;  // hue in turns (0..1)
+                if (v == r) h = (g - b) / (v - lo) / 6.0f;
+                else if (v == g) h = (2.0f + (b - r) / (v - lo)) / 6.0f;
+                else h = (4.0f + (r - g) / (v - lo)) / 6.0f;
+                if (h < 0) h += 1.0f;
+                cyan += h >= 0.45f && h <= 0.58f;
+            }
+        }
+        t.icy = cyan >= n * 0.2 && white >= n * 0.05 && dark >= n * 0.02;
+    }
     return t;
 }
 
@@ -395,8 +431,9 @@ void TextureAnalyzer::LoadCache() {
         in.read(reinterpret_cast<char*>(&e.size), 8);
         in.read(reinterpret_cast<char*>(&kind), 1);
         in.read(reinterpret_cast<char*>(e.traits.detail.data()), e.traits.detail.size());
-        if (!in || kind > uint8_t(TextureKind::Packed)) break;
-        e.traits.kind = TextureKind(kind);
+        if (!in || (kind & 0x7F) > uint8_t(TextureKind::Packed)) break;
+        e.traits.kind = TextureKind(kind & 0x7F);
+        e.traits.icy = (kind & 0x80) != 0;
         e.done = true;
         entries_[path] = e;
     }
@@ -410,7 +447,7 @@ void TextureAnalyzer::SaveCache() {
         for (const auto& [path, e] : entries_) {
             if (!e.done || path.size() > 0xFFFF) continue;
             const uint16_t len = uint16_t(path.size());
-            const uint8_t kind = uint8_t(e.traits.kind);
+            const uint8_t kind = uint8_t(e.traits.kind) | (e.traits.icy ? 0x80 : 0);  // top bit: icy
             auto put = [&](const void* p, size_t n) {
                 out.insert(out.end(), static_cast<const char*>(p), static_cast<const char*>(p) + n);
             };

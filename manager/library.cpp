@@ -6,6 +6,7 @@
 
 #include "dds.h"
 #include "mod_package.h"
+#include "resorep_hash.h"
 #include "settings.h"
 #include "texture_index.h"
 #include "win_util.h"
@@ -163,6 +164,12 @@ void Library::Refresh() {
 const fs::path* Library::ActiveMod(uint32_t hash) const {
     auto it = active_.find(hash);
     return it == active_.end() ? nullptr : &it->second;
+}
+
+const fs::path* Library::ModFor(uint32_t gameHash) const {
+    for (int delta : kHashTolerance)
+        if (const fs::path* p = ActiveMod(gameHash + uint32_t(delta))) return p;
+    return nullptr;
 }
 
 std::string Library::SaveState() {
