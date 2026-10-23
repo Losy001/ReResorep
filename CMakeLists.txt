@@ -35,6 +35,15 @@ target_include_directories(resorep_core PUBLIC core ${RERESOREP_GENERATED})
 add_subdirectory(proxy)
 add_subdirectory(manager)
 
+# build/testing: an everyday copy of the app outside the compiler's output folder, so its
+# data survives clean rebuilds. Every build refreshes its exe and proxy (part of ALL).
+add_custom_target(testing ALL
+    COMMAND ${CMAKE_COMMAND} -DBIN=${RERESOREP_BIN} -DDIR=${CMAKE_BINARY_DIR}/testing
+            -P ${PROJECT_SOURCE_DIR}/packaging/testing.cmake
+    DEPENDS ReResorep proxy
+    COMMENT "Updating build/testing"
+    VERBATIM)
+
 # Release folder + zip in build/ship: cmake --build build --config Release --target ship
 add_custom_target(ship
     COMMAND ${CMAKE_COMMAND} -DBIN=${RERESOREP_BIN} -DSRC=${PROJECT_SOURCE_DIR} -DOUT=${CMAKE_BINARY_DIR}/ship

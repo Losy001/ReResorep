@@ -136,6 +136,16 @@ The output goes to `build/bin/`: `ReResorep.exe` and `proxy/d3d11.dll`. Ship tha
 - Lookup order: hash, +1, −1, +2, −2. Several files for one hash: the first by name wins.
 - x64 only. Siege is 64-bit; the old 32-bit proxy was not ported.
 
+## Everyday copy: build/testing
+
+Run the app from `build/testing\ReResorep.exe`, not from `build/bin`. Every build copies the new
+`ReResorep.exe` and `proxy/d3d11.dll` there; your settings, mods, dumps and labels in that folder
+are never touched. If the testing copy is open during a build, the build still succeeds: a
+warning says the copy wasn't updated, and the next build after closing it catches up.
+
+`build/testing` is the same folder CTest uses for its logs (Windows ignores case), so test runs
+add a `Temporary` subfolder there. It's harmless.
+
 ## Shipping a release
 
 ```bash
