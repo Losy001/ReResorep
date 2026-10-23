@@ -24,6 +24,7 @@ struct ManagerSettings {
     uint32_t accentColor = 0x4296FA;  // 0xRRGGBB
     bool hideNormals = false;
     bool hideGrayscale = false;
+    bool hidePacked = false;
     std::vector<std::filesystem::path> games;  // game executables
 
     static std::filesystem::path File();

@@ -125,6 +125,7 @@ private:
 
     void ImportFiles(const std::vector<std::filesystem::path>& files, const std::wstring& relDir);
     void ReplaceDump(uint32_t hash);
+    void ExportAsPng(const TextureFile& file);  // asks where, then writes the PNG
     void ToggleEnabled(const TextureFile& file);
     void Defer(std::function<void()> action) { deferred_.push_back(std::move(action)); }
     void ApplySettings();
@@ -146,8 +147,8 @@ private:
     struct PreviewTweak {
         int quarterTurns = 0;  // clockwise
         bool mirror = false;
-        float zoom = 1.0f;  // 1 = whole texture fits the preview
-        ImVec2 pan;         // top-left of the zoomed picture relative to the preview, in preview sizes (<= 0)
+        float zoom = 1.0f;                // 1 = whole texture fits the preview
+        ImVec2 centre = {0.5f, 0.5f};     // point of the picture (0..1 across it) at the middle of the view
     };
     std::unordered_map<uint32_t, PreviewTweak> previewTweaks_;  // per hash, this session only
     Microsoft::WRL::ComPtr<ID3D11SamplerState> pointSampler_;   // for the sharp zoomed preview

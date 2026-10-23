@@ -15,8 +15,12 @@
 
 namespace resorep::ui {
 
-enum class TextureKind : uint8_t { Unknown, Color, Normal, Grayscale };
+// Packed: several grayscale maps (roughness, AO, masks...) stored in one texture's channels,
+// which in Siege shows as blue/cyan: blue near full, red near zero, the detail mostly in green.
+enum class TextureKind : uint8_t { Unknown, Color, Normal, Grayscale, Packed };
 const char* KindName(TextureKind kind);
+// How many channels a format really stores: 1 (R/A only), 2 (RG, e.g. BC5) or 4.
+int ChannelCount(DXGI_FORMAT format);
 
 // What the analyser learns about a texture.
 struct TextureTraits {

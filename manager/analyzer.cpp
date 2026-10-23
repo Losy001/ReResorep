@@ -20,7 +20,9 @@ namespace {
 constexpr int kSample = 32;   // GPU sample size
 constexpr int kDetail = 16;   // fingerprint size
 constexpr uint32_t kLoadMax = 64;  // largest mip read from disk for analysis
-constexpr char kCacheMagic[4] = {'R', 'R', 'A', '2'};  // bump when classification changes
+constexpr char kCacheMagic[4] = {'R', 'R', 'A', '4'};  // bump when classification changes
+
+}  // namespace
 
 int ChannelCount(DXGI_FORMAT f) {
     switch (f) {
@@ -40,6 +42,8 @@ int ChannelCount(DXGI_FORMAT f) {
     }
 }
 
+namespace {
+
 const char kShader[] = R"(
 Texture2D tex : register(t0);
 SamplerState samp : register(s0);
@@ -58,7 +62,8 @@ const char* KindName(TextureKind kind) {
     switch (kind) {
         case TextureKind::Color: return "Color";
         case TextureKind::Normal: return "Normal map";
-        case TextureKind::Grayscale: return "Depth / grayscale (mask, roughness, height)";
+        case TextureKind::Grayscale: return "Depth / single channel (mask, roughness, height)";
+        case TextureKind::Packed: return "Packed material map (blue)";
         default: return "Not analysed yet";
     }
 }
@@ -79,11 +84,13 @@ TextureTraits AnalyzePixels(const float* rgba, DXGI_FORMAT format) {
         const int c = format == DXGI_FORMAT_A8_UNORM ? 3 : 0;
         for (int i = 0; i < n; ++i) detail[i] = px[i * 4 + c];
     } else {
-        int unitVectors = 0, gray = 0, transparent = 0;
-        double meanX = 0, meanY = 0, meanB = 0;
+        int unitVectors = 0, transparent = 0, blueFull = 0;
+        double meanX = 0, meanY = 0, meanB = 0, blueLift = 0;
         for (int i = 0; i < n; ++i) {
             const float r = px[i * 4], g = px[i * 4 + 1], b = px[i * 4 + 2];
             transparent += px[i * 4 + 3] < 0.9f;
+            blueFull += b > 0.8f;
+            blueLift += b - std::min(r, g);
             const float x = r * 2 - 1, y = g * 2 - 1;
             meanX += x;
             meanY += y;
@@ -94,18 +101,22 @@ TextureTraits AnalyzePixels(const float* rgba, DXGI_FORMAT format) {
                 const float z = b * 2 - 1;
                 const float len = std::sqrt(x * x + y * y + z * z);
                 unitVectors += std::fabs(len - 1.0f) < 0.25f && z > 0.2f;
-                gray += std::max({std::fabs(r - g), std::fabs(g - b), std::fabs(r - b)}) < 0.04f;
             }
         }
         meanX /= n;
         meanY /= n;
         meanB /= n;
+        blueLift /= n;
         const bool centred = std::fabs(meanX) < 0.35 && std::fabs(meanY) < 0.35;
         if (channels == 2 && unitVectors > n * 0.95 && centred) t.kind = TextureKind::Normal;
         else if (channels == 4 && unitVectors > n * 0.9 && meanB > 0.6 && centred) t.kind = TextureKind::Normal;
-        // White/grey art on a transparent background (UI icons, decals) has no colour either,
-        // but depth/roughness/mask maps never use alpha for cut-outs, so transparency means art.
-        else if (channels == 4 && gray > n * 0.98 && transparent < n * 0.03) t.kind = TextureKind::Grayscale;
+        // Blue near full and well above red or green. Checked against ~5300 Siege dumps:
+        // white, grey and pale-pink art has blue near full too, but not above the others.
+        else if (channels == 4 && blueFull >= n * 0.9 && blueLift > 0.25 && transparent < n * 0.03)
+            t.kind = TextureKind::Packed;
+        // Colourless 4-channel textures are not grouped with depth maps: in Siege those are
+        // grey art (concrete, metal, logos, icons). The game keeps its single-channel data
+        // (depth, roughness, masks) in single-channel formats such as BC4, handled above.
         else t.kind = TextureKind::Color;
 
         for (int i = 0; i < n; ++i) {
@@ -384,7 +395,7 @@ void TextureAnalyzer::LoadCache() {
         in.read(reinterpret_cast<char*>(&e.size), 8);
         in.read(reinterpret_cast<char*>(&kind), 1);
         in.read(reinterpret_cast<char*>(e.traits.detail.data()), e.traits.detail.size());
-        if (!in || kind > uint8_t(TextureKind::Grayscale)) break;
+        if (!in || kind > uint8_t(TextureKind::Packed)) break;
         e.traits.kind = TextureKind(kind);
         e.done = true;
         entries_[path] = e;

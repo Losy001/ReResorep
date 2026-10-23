@@ -59,6 +59,7 @@ void ManagerSettings::Load() {
     accentColor = ParseHexColor(ini.GetOr("ui_accent_color", ""), kDefaultAccent);
     hideNormals = ini.GetBool("ui_hide_normals", false);
     hideGrayscale = ini.GetBool("ui_hide_grayscale", false);
+    hidePacked = ini.GetBool("ui_hide_packed", false);
     games.clear();
     for (const std::string& g : ini.GetAll("game")) games.emplace_back(Utf8ToWide(g));
 }
@@ -80,6 +81,7 @@ bool ManagerSettings::Save() const {
     ini.Set("ui_accent_color", HexColor(accentColor));
     ini.SetBool("ui_hide_normals", hideNormals);
     ini.SetBool("ui_hide_grayscale", hideGrayscale);
+    ini.SetBool("ui_hide_packed", hidePacked);
     std::vector<std::string> list;
     for (const auto& g : games) list.push_back(WideToUtf8(g.wstring()));
     ini.SetAll("game", list);

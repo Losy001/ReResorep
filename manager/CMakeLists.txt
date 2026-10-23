@@ -21,12 +21,13 @@ add_executable(ReResorep WIN32
     library.cpp
     thumbnails.cpp
     analyzer.cpp
+    png_export.cpp
     win_util.cpp
     theme.cpp
     manager.manifest
     app.rc
 )
-target_link_libraries(ReResorep PRIVATE resorep_core imgui d3d11 dxgi d3dcompiler shell32 ole32 version dwmapi)
+target_link_libraries(ReResorep PRIVATE resorep_core imgui d3d11 dxgi d3dcompiler shell32 ole32 version dwmapi windowscodecs)
 set_target_properties(ReResorep PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${RERESOREP_BIN}
     RUNTIME_OUTPUT_DIRECTORY_RELEASE ${RERESOREP_BIN}

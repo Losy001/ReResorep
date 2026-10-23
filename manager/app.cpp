@@ -16,6 +16,7 @@
 #include "licenses.h"
 #include "version.h"
 #include "mod_state.h"
+#include "png_export.h"
 #include "texture_index.h"
 #include "win_util.h"
 
@@ -70,8 +71,9 @@ std::string Lower(std::string s) {
 
 fs::path LabelsFile() { return ExeDirectory() / LabelStore::kFileName; }
 
-const ImU32 kKindColors[] = {0, 0, IM_COL32(120, 150, 255, 255), IM_COL32(200, 200, 200, 255)};
-const char* const kKindBadges[] = {"", "", "normal", "depth"};
+const ImU32 kKindColors[] = {0, 0, IM_COL32(120, 150, 255, 255), IM_COL32(200, 200, 200, 255),
+                             IM_COL32(90, 210, 255, 255)};
+const char* const kKindBadges[] = {"", "", "normal", "depth", "packed"};
 
 // Fits a w x h image into a box, keeping aspect ratio.
 ImVec2 Fit(uint32_t w, uint32_t h, float box) {
@@ -663,6 +665,18 @@ void App::DrawFolderNode(size_t& index) {
     }
 }
 
+void App::ExportAsPng(const TextureFile& file) {
+    const std::wstring name = file.path.stem().wstring() + L".png";
+    auto target = PickSaveFile(hwnd_, L"Export as PNG", name.c_str(), {{L"PNG image", L"*.png"}}, L"png");
+    if (!target) return;
+    // Upright the way the preview shows it: the global Rotate/Mirror plus this texture's own buttons.
+    PreviewTweak tweak;
+    if (auto it = previewTweaks_.find(file.hash); it != previewTweaks_.end()) tweak = it->second;
+    const int turns = settings_.previewRotation / 90 + tweak.quarterTurns;
+    const bool mirror = settings_.previewMirror != tweak.mirror;
+    Status(ExportPng(file.path, *target, turns, mirror), "Exported " + ToUtf8(target->filename()));
+}
+
 void App::DrawMoveMenu(const TextureFile& file, bool copy) {
     if (!ImGui::BeginMenu(copy ? "Copy to" : "Move to")) return;
     auto item = [&](const char* label, const std::wstring& rel, int depth) {
@@ -1003,8 +1017,13 @@ void App::DrawViewOptions(bool isMod) {
     changed |= ImGui::Checkbox("Hide normal maps", &settings_.hideNormals);
     ImGui::SameLine();
     changed |= ImGui::Checkbox("Hide depth / grayscale", &settings_.hideGrayscale);
-    ImGui::SetItemTooltip("Textures with no colour and no transparency: depth/height, roughness, masks.\n"
-                          "Icons and decals on a transparent background are not hidden.\n"
+    ImGui::SetItemTooltip("Single-channel textures (BC4 and similar): depth/height, roughness, masks.\n"
+                          "Grey-looking colour textures (concrete, metal, logos) are not hidden.\n"
+                          "Texture types are detected automatically in the background.");
+    ImGui::SameLine();
+    changed |= ImGui::Checkbox("Hide packed (blue)", &settings_.hidePacked);
+    ImGui::SetItemTooltip("The blue/cyan textures: several grayscale maps (roughness, AO, masks) packed into\n"
+                          "one texture's colour channels. Not something you see in-game as a picture.\n"
                           "Texture types are detected automatically in the background.");
 
     ImGui::SameLine(0, 20);
@@ -1020,10 +1039,11 @@ void App::DrawGrid(const std::vector<TextureFile>& files, bool isMod) {
         if (isMod && !showDisabled_ && !f.enabled) continue;
         if (isMod && !InView(f)) continue;
         if (!isMod && hideModdedDumps_ && library_.IsModded(f.hash)) continue;
-        if (settings_.hideNormals || settings_.hideGrayscale) {
+        if (settings_.hideNormals || settings_.hideGrayscale || settings_.hidePacked) {
             const TextureKind kind = KindOf(f);
             if (settings_.hideNormals && kind == TextureKind::Normal) continue;
             if (settings_.hideGrayscale && kind == TextureKind::Grayscale) continue;
+            if (settings_.hidePacked && kind == TextureKind::Packed) continue;
         }
         if (MatchesFilter(f)) visible.push_back(&f);
     }
@@ -1104,7 +1124,8 @@ void App::DrawCard(const TextureFile& file, bool isMod, float size) {
         dl->AddText(ImVec2(pos.x + size - w - 6, pos.y + 4), IM_COL32(255, 220, 120, 255), "enc");
     }
 
-    if (const TextureKind kind = KindOf(file); kind == TextureKind::Normal || kind == TextureKind::Grayscale) {
+    if (const TextureKind kind = KindOf(file);
+        kind == TextureKind::Normal || kind == TextureKind::Grayscale || kind == TextureKind::Packed) {
         const char* badge = kKindBadges[int(kind)];
         const float w = ImGui::CalcTextSize(badge).x;
         dl->AddRectFilled(ImVec2(pos.x + size - w - 10, pos.y + size - textH - 6), ImVec2(pos.x + size - 2, pos.y + size - 2),
@@ -1150,6 +1171,10 @@ void App::DrawCard(const TextureFile& file, bool isMod, float size) {
             if (ImGui::MenuItem("Open in editor")) OpenWithShell(file.path);
         }
         if (ImGui::MenuItem("Show in Explorer")) ShowInExplorer(file.path);
+        const bool encryptedFile = info && info->encrypted;
+        if (ImGui::MenuItem("Export PNG...", nullptr, false, !encryptedFile)) Defer([this, file] { ExportAsPng(file); });
+        ImGui::SetItemTooltip(encryptedFile ? "Encrypted (resorep1) textures can't be exported."
+                                            : "Full resolution, turned and mirrored the way the preview shows it.");
         ImGui::Separator();
         if (ImGui::MenuItem("Edit label")) focusLabel_ = true;
         const bool isNormal = KindOf(file) == TextureKind::Normal;
@@ -1185,62 +1210,74 @@ void App::DrawDetails() {
     const TextureInfo* info = nullptr;
     ID3D11ShaderResourceView* srv = thumbs_.Get(file->path, file->modified, 0, &info);
     if (srv && info) {
+        // The view is always the whole width x box area, so a tall or wide texture can use
+        // all of it once zoomed in; at 100% fit it sits in the middle.
         const ImVec2 fit = PreviewSize(info->width, info->height, box, tweak.quarterTurns);
-        const ImVec2 at(ImGui::GetCursorScreenPos().x + (width - fit.x) * 0.5f, ImGui::GetCursorScreenPos().y);
-        const ImVec2 rowStart = ImGui::GetCursorScreenPos();
-        ImGui::SetCursorScreenPos(at);
-        ImGui::InvisibleButton("##preview", fit, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonMiddle);
+        const ImVec2 view(width, box);
+        const ImVec2 at = ImGui::GetCursorScreenPos();
+        ImGui::InvisibleButton("##preview", view, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonMiddle);
         ImGui::SetItemKeyOwner(ImGuiKey_MouseWheelY);  // the wheel zooms here instead of scrolling the panel
-        ImGui::SetCursorScreenPos(ImVec2(rowStart.x, ImGui::GetCursorScreenPos().y));
 
         // Zoom: wheel steps of 25% around the cursor, up to 16 screen pixels per texel.
         const int turns = (settings_.previewRotation / 90 + tweak.quarterTurns) & 3;
         const float texelsAcross = float(turns % 2 ? info->height : info->width);
         const float maxZoom = std::max(1.0f, 16.0f * texelsAcross / fit.x);
         const ImGuiIO& io = ImGui::GetIO();
-        auto clampPan = [&] {
-            tweak.pan.x = std::clamp(tweak.pan.x, 1.0f - tweak.zoom, 0.0f);
-            tweak.pan.y = std::clamp(tweak.pan.y, 1.0f - tweak.zoom, 0.0f);
+        auto imageSize = [&] { return ImVec2(fit.x * tweak.zoom, fit.y * tweak.zoom); };
+        auto imageMin = [&] {
+            const ImVec2 s = imageSize();
+            return ImVec2(at.x + view.x * 0.5f - tweak.centre.x * s.x, at.y + view.y * 0.5f - tweak.centre.y * s.y);
+        };
+        // Smaller than the view along an axis: centred. Larger: no empty space at its edges.
+        auto clampCentre = [&] {
+            const ImVec2 s = imageSize();
+            auto axis = [](float& c, float viewLen, float len) {
+                const float half = viewLen * 0.5f / len;
+                c = len <= viewLen ? 0.5f : std::clamp(c, half, 1.0f - half);
+            };
+            axis(tweak.centre.x, view.x, s.x);
+            axis(tweak.centre.y, view.y, s.y);
         };
         if (ImGui::IsItemHovered() && io.MouseWheel != 0.0f) {
-            const float zoom = std::clamp(tweak.zoom * std::pow(1.25f, io.MouseWheel), 1.0f, maxZoom);
             // Keep the texel under the cursor where it is.
-            const ImVec2 m((io.MousePos.x - at.x) / fit.x, (io.MousePos.y - at.y) / fit.y);
-            tweak.pan.x = m.x - (m.x - tweak.pan.x) * zoom / tweak.zoom;
-            tweak.pan.y = m.y - (m.y - tweak.pan.y) * zoom / tweak.zoom;
-            tweak.zoom = zoom;
-            clampPan();
+            const ImVec2 m0 = imageMin(), s0 = imageSize();
+            const ImVec2 u((io.MousePos.x - m0.x) / s0.x, (io.MousePos.y - m0.y) / s0.y);
+            tweak.zoom = std::clamp(tweak.zoom * std::pow(1.25f, io.MouseWheel), 1.0f, maxZoom);
+            const ImVec2 s1 = imageSize();
+            tweak.centre.x = u.x + (at.x + view.x * 0.5f - io.MousePos.x) / s1.x;
+            tweak.centre.y = u.y + (at.y + view.y * 0.5f - io.MousePos.y) / s1.y;
+            clampCentre();
         }
         if (ImGui::IsItemActive() && (io.MouseDelta.x != 0.0f || io.MouseDelta.y != 0.0f)) {
-            tweak.pan.x += io.MouseDelta.x / fit.x;
-            tweak.pan.y += io.MouseDelta.y / fit.y;
-            clampPan();
+            const ImVec2 s = imageSize();
+            tweak.centre.x -= io.MouseDelta.x / s.x;
+            tweak.centre.y -= io.MouseDelta.y / s.y;
+            clampCentre();
         }
         if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
             tweak.zoom = 1.0f;
-            tweak.pan = ImVec2();
+            tweak.centre = ImVec2(0.5f, 0.5f);
         }
-        if (tweak.zoom > 1.0f) {
+        if (tweak.zoom > 1.0f && ImGui::IsItemHovered()) {
             ImGui::SetMouseCursor(ImGui::IsItemActive() ? ImGuiMouseCursor_ResizeAll : ImGuiMouseCursor_Hand);
         }
         ImGui::SetItemTooltip("Scroll to zoom, drag to move around, double-click to fit.");
 
         ImDrawList* dl = ImGui::GetWindowDrawList();
-        dl->PushClipRect(at, ImVec2(at.x + fit.x, at.y + fit.y), true);
-        const ImVec2 zoomed(fit.x * tweak.zoom, fit.y * tweak.zoom);
+        dl->PushClipRect(at, ImVec2(at.x + view.x, at.y + view.y), true);
+        const ImVec2 zoomed = imageSize();
         // Past 100% each texel covers several screen pixels; point sampling keeps their edges hard.
         const bool sharp = settings_.sharpZoom && pointSampler_ && zoomed.x > texelsAcross;
         if (sharp) dl->AddCallback(UseSampler, pointSampler_.Get());
-        DrawPreview(dl, srv, info->width, info->height,
-                    ImVec2(at.x + tweak.pan.x * fit.x, at.y + tweak.pan.y * fit.y), zoomed, IM_COL32_WHITE,
-                    tweak.quarterTurns, tweak.mirror);
+        DrawPreview(dl, srv, info->width, info->height, imageMin(), zoomed, IM_COL32_WHITE, tweak.quarterTurns,
+                    tweak.mirror);
         if (sharp) dl->AddCallback(ImDrawCallback_ResetRenderState, nullptr);
         if (tweak.zoom > 1.0f) {
             // Size on screen relative to the texture's own pixels.
             char text[32];
             snprintf(text, sizeof(text), "%.0f%%", 100.0f * zoomed.x / std::max(1.0f, texelsAcross));
             const ImVec2 size = ImGui::CalcTextSize(text);
-            const ImVec2 p(at.x + fit.x - size.x - 8, at.y + 4);
+            const ImVec2 p(at.x + view.x - size.x - 8, at.y + 4);
             dl->AddRectFilled(ImVec2(p.x - 4, p.y - 2), ImVec2(p.x + size.x + 4, p.y + size.y + 2), IM_COL32(0, 0, 0, 170), 4.0f);
             dl->AddText(p, IM_COL32_WHITE, text);
         }
@@ -1254,7 +1291,7 @@ void App::DrawDetails() {
     const float buttonW = (width - ImGui::GetStyle().ItemSpacing.x * 3) / 4;
     auto unzoom = [&] {
         tweak.zoom = 1.0f;
-        tweak.pan = ImVec2();
+        tweak.centre = ImVec2(0.5f, 0.5f);
     };
     if (ImGui::Button("Rotate left", ImVec2(buttonW, 0))) {
         tweak.quarterTurns = (tweak.quarterTurns + 3) & 3;
@@ -1497,10 +1534,19 @@ void App::DrawGames() {
     }
     if (!ImGui::BeginTable("games", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_SizingStretchProp))
         return;
-    ImGui::TableSetupColumn("Game", ImGuiTableColumnFlags_WidthStretch, 3.0f);
-    ImGui::TableSetupColumn("Status", ImGuiTableColumnFlags_WidthStretch, 1.4f);
-    ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 470.0f);
+    // Status is as wide as its text; the buttons share the rest with the game path and wrap
+    // onto another line when the window is too narrow for one row of them.
+    ImGui::TableSetupColumn("Game", ImGuiTableColumnFlags_WidthStretch, 1.0f);
+    ImGui::TableSetupColumn("Status", ImGuiTableColumnFlags_WidthFixed);
+    ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthStretch, 1.0f);
     ImGui::TableHeadersRow();
+    // Puts the next button beside the last one if it fits in the column, else on a new line.
+    auto flow = [](const char* nextLabel) {
+        const ImGuiStyle& style = ImGui::GetStyle();
+        const float next = ImGui::CalcTextSize(nextLabel, nullptr, true).x + style.FramePadding.x * 2;
+        const float right = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
+        if (ImGui::GetItemRectMax().x + style.ItemSpacing.x + next <= right) ImGui::SameLine();
+    };
 
     std::optional<size_t> remove;
     for (size_t i = 0; i < games_.size(); ++i) {
@@ -1509,6 +1555,7 @@ void App::DrawGames() {
         ImGui::PushID(int(i));
         ImGui::TableNextRow();
         ImGui::TableNextColumn();
+        ImGui::AlignTextToFramePadding();  // first lines line up with the buttons' labels
         ImGui::TextUnformatted(ToUtf8(g.exe.filename()).c_str());
         ImGui::TextColored(kDimColor, "%s", ToUtf8(g.exe.parent_path()).c_str());
 
@@ -1516,6 +1563,7 @@ void App::DrawGames() {
         const ImVec4 color = g.status == ProxyStatus::Installed ? kOkColor
                              : g.status == ProxyStatus::NotInstalled ? kDimColor
                                                                      : ImVec4(1.0f, 0.75f, 0.3f, 1.0f);
+        ImGui::AlignTextToFramePadding();
         ImGui::TextColored(color, "%s", StatusText(g.status));
         if (running) ImGui::TextColored(kOkColor, "Running");
         if (!g.proxyVersion.empty()) {
@@ -1546,14 +1594,15 @@ void App::DrawGames() {
             ImGui::SetItemTooltip(running     ? "The game is already running"
                                   : installed ? "Launch the game with your mods"
                                               : "Launch the game (install ReResorep first for mods to apply)");
-            ImGui::SameLine();
 
             const bool closingThis = closeJob_.valid() && closingExe_ == g.exe;
+            const char* closeLabel = closingThis ? "Closing...###close" : "Close###close";
+            flow(closeLabel);
             ImGui::BeginDisabled(!running || closeJob_.valid());
             ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.55f, 0.18f, 0.18f, 1.0f));
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.70f, 0.24f, 0.24f, 1.0f));
             ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.45f, 0.14f, 0.14f, 1.0f));
-            if (ImGui::Button(closingThis ? "Closing...###close" : "Close###close")) {
+            if (ImGui::Button(closeLabel)) {
                 closingExe_ = g.exe;
                 // Ask nicely, give it time to shut down, then end it; off the UI thread.
                 closeJob_ = std::async(std::launch::async, [exe = g.exe] { return CloseProgram(exe, kCloseGraceMs); });
@@ -1564,15 +1613,18 @@ void App::DrawGames() {
             ImGui::SetItemTooltip("Asks the game to exit. If it is still running after %u seconds, it is ended "
                                   "forcefully (unsaved progress in the game is lost).",
                                   unsigned(kCloseGraceMs / 1000));
-            ImGui::SameLine();
             // These rebuild games_, so they run after the table is drawn.
-            if (ImGui::Button(installed ? "Reinstall" : g.status == ProxyStatus::NotInstalled ? "Install" : "Update")) {
+            const char* installLabel = installed                                  ? "Reinstall"
+                                       : g.status == ProxyStatus::NotInstalled ? "Install"
+                                                                               : "Update";
+            flow(installLabel);
+            if (ImGui::Button(installLabel)) {
                 Defer([this, exe = g.exe] {
                     Status(InstallProxy(exe, settings_), "Installed into " + ToUtf8(exe.parent_path()));
                     RefreshGames();
                 });
             }
-            ImGui::SameLine();
+            flow("Uninstall");
             ImGui::BeginDisabled(g.status == ProxyStatus::NotInstalled);
             if (ImGui::Button("Uninstall")) {
                 Defer([this, exe = g.exe] {
@@ -1581,9 +1633,9 @@ void App::DrawGames() {
                 });
             }
             ImGui::EndDisabled();
-            ImGui::SameLine();
+            flow("Open folder");
             if (ImGui::Button("Open folder")) OpenWithShell(g.exe.parent_path());
-            ImGui::SameLine();
+            flow("Remove");
         }
         if (ImGui::Button("Remove")) remove = i;
         ImGui::SetItemTooltip("Remove from this list (does not uninstall).");

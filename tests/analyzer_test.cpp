@@ -124,6 +124,20 @@ int main() {
     CHECK(analyzer.AnalyzeNow(dir / L"icon.dds", icon));
     CHECK(icon.kind == TextureKind::Color);  // white art with transparency is not a depth map
 
+    // Siege-style packed map: blue full, red empty, detail in green (ABGR in memory order).
+    WriteColor(dir / L"packed.dds", plates, 0xFFFFC000, 0xFFFF3000);
+    // Pale pink/white art also has blue near full, but not above red and green.
+    WriteColor(dir / L"palepink.dds", plates, 0xFFF0E8FF, 0xFFFFFFFF);
+    // Grey colour art (concrete, a logo) in a 4-channel format is not a depth map.
+    WriteColor(dir / L"greyart.dds", plates, 0xFFB0B0B0, 0xFF303030);
+    TextureTraits packed, palePink, greyArt;
+    CHECK(analyzer.AnalyzeNow(dir / L"packed.dds", packed));
+    CHECK(analyzer.AnalyzeNow(dir / L"palepink.dds", palePink));
+    CHECK(analyzer.AnalyzeNow(dir / L"greyart.dds", greyArt));
+    CHECK(packed.kind == TextureKind::Packed);
+    CHECK(palePink.kind == TextureKind::Color);
+    CHECK(greyArt.kind == TextureKind::Color);
+
     const float aa = DetailSimilarity(colorA, normalA), ab = DetailSimilarity(colorA, normalB);
     const float bb = DetailSimilarity(colorB, normalB), ba = DetailSimilarity(colorB, normalA);
     std::printf("similarity colorA~normalA %.2f, colorA~normalB %.2f, colorB~normalB %.2f, colorB~normalA %.2f\n", aa, ab,
