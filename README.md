@@ -136,6 +136,25 @@ The output goes to `build/bin/`: `ReResorep.exe` and `proxy/d3d11.dll`. Ship tha
 - Lookup order: hash, +1, −1, +2, −2. Several files for one hash: the first by name wins.
 - x64 only. Siege is 64-bit; the old 32-bit proxy was not ported.
 
+## Shipping a release
+
+```bash
+cmake --build build --config Release --target ship
+```
+
+This builds Release and creates `build/ship/ReResorep-<version>/` and
+`build/ship/ReResorep-<version>-win64.zip`, ready to upload. The package contains:
+
+- `ReResorep.exe` and `proxy/d3d11.dll`,
+- a user-facing `README.txt` (from `packaging/README.txt`),
+- `CREDITS.md`,
+- `THIRD_PARTY_NOTICES.txt`, with the Dear ImGui licence,
+- `SHA256SUMS.txt`.
+
+The zip's own checksum is written to `…-win64.zip.sha256.txt` for the release page. Only those
+files are copied, so your own settings, caches, dumps and mods in `build/bin` never end up in a
+release. Packaging a Debug build is refused.
+
 ## Version and credits
 
 The version is set once, in `CMakeLists.txt` (`project(... VERSION 2.0.0)`). From there it goes

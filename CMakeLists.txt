@@ -35,6 +35,14 @@ target_include_directories(resorep_core PUBLIC core ${RERESOREP_GENERATED})
 add_subdirectory(proxy)
 add_subdirectory(manager)
 
+# Release folder + zip in build/ship: cmake --build build --config Release --target ship
+add_custom_target(ship
+    COMMAND ${CMAKE_COMMAND} -DBIN=${RERESOREP_BIN} -DSRC=${PROJECT_SOURCE_DIR} -DOUT=${CMAKE_BINARY_DIR}/ship
+            -DVERSION=${PROJECT_VERSION} -DCONFIG=$<CONFIG> -P ${PROJECT_SOURCE_DIR}/packaging/ship.cmake
+    DEPENDS ReResorep proxy
+    COMMENT "Packaging ReResorep ${PROJECT_VERSION}"
+    VERBATIM)
+
 enable_testing()
 add_executable(core_tests tests/core_tests.cpp)
 target_link_libraries(core_tests PRIVATE resorep_core)

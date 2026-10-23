@@ -22,6 +22,7 @@ add_executable(ReResorep WIN32
     thumbnails.cpp
     analyzer.cpp
     win_util.cpp
+    theme.cpp
     manager.manifest
     app.rc
 )

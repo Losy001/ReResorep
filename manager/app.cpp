@@ -11,6 +11,7 @@
 #include <iterator>
 
 #include "dds.h"
+#include "theme.h"
 #include "licenses.h"
 #include "version.h"
 #include "mod_state.h"
@@ -24,7 +25,6 @@ namespace {
 const ImVec4 kErrorColor(1.0f, 0.45f, 0.4f, 1.0f);
 const ImVec4 kOkColor(0.5f, 0.9f, 0.5f, 1.0f);
 const ImVec4 kDimColor(0.6f, 0.6f, 0.6f, 1.0f);
-const ImVec4 kAccentColor(0.35f, 0.65f, 1.0f, 1.0f);
 constexpr float kDetailsWidth = 340.0f;
 constexpr float kSidebarWidth = 260.0f;
 
@@ -93,6 +93,7 @@ void HelpMarker(const char* text) {
 
 App::App(HWND hwnd, ID3D11Device* device) : hwnd_(hwnd), thumbs_(device) {
     settings_.Load();
+    ApplyAccentColor(settings_.accentColor);
     labels_.Load(LabelsFile());
     analyzer_ = std::make_unique<TextureAnalyzer>(ExeDirectory() / L"texture_analysis.cache");
     library_.SetFolders(settings_.moddedFolder, settings_.originalFolder);
@@ -948,7 +949,7 @@ void App::DrawCard(const TextureFile& file, bool isMod, float size) {
         dl->AddText(ImVec2(pos.x + size - w - 6, pos.y + size - textH - 4), kKindColors[int(kind)], badge);
     }
 
-    const ImU32 border = selected ? IM_COL32(90, 160, 255, 255) : hovered ? IM_COL32(120, 120, 130, 255) : 0;
+    const ImU32 border = selected ? ImGui::GetColorU32(AccentColor()) : hovered ? IM_COL32(120, 120, 130, 255) : 0;
     if (border) dl->AddRect(pos, ImVec2(pos.x + size, pos.y + size), border, 4.0f, 0, selected ? 2.5f : 1.0f);
 
     char line[64];
@@ -961,7 +962,7 @@ void App::DrawCard(const TextureFile& file, bool isMod, float size) {
     } else if (settings_.sortKey == "filesize") {
         dl->AddText(line2, IM_COL32(150, 150, 160, 255), FormatBytes(file.size).c_str());
     } else if (const std::string& label = DisplayLabel(file); !label.empty())
-        dl->AddText(line2, labels_.Get(file.hash) ? IM_COL32(150, 200, 255, 255) : IM_COL32(150, 150, 160, 255),
+        dl->AddText(line2, labels_.Get(file.hash) ? ImGui::GetColorU32(AccentTextColor()) : IM_COL32(150, 150, 160, 255),
                     label.c_str());
     else if (info && !info->error.empty())
         dl->AddText(ImVec2(pos.x + 2, pos.y + size + 2 + textH), IM_COL32(255, 120, 110, 255), info->error.c_str());
@@ -1047,7 +1048,7 @@ void App::DrawDetails() {
     if (info) {
         if (!info->error.empty()) ImGui::TextColored(kErrorColor, "%s", info->error.c_str());
         else ImGui::Text("%u x %u, %u mip(s), %s", info->width, info->height, info->mipLevels, FormatName(info->format));
-        if (info->encrypted) ImGui::TextColored(kAccentColor, "Encrypted (resorep1 pack)");
+        if (info->encrypted) ImGui::TextColored(AccentTextColor(), "Encrypted (resorep1 pack)");
     }
     ImGui::Text("File size: %s", FormatBytes(file->size).c_str());
     ImGui::Text("Modified: %s", FormatDate(file->modified).c_str());
@@ -1149,7 +1150,7 @@ void App::DrawSimilarWindow() {
     ImGui::SameLine();
     ImGui::BeginGroup();
     ImGui::Text("%u", src.hash);
-    if (const std::string& label = DisplayLabel(src); !label.empty()) ImGui::TextColored(kAccentColor, "%s", label.c_str());
+    if (const std::string& label = DisplayLabel(src); !label.empty()) ImGui::TextColored(AccentTextColor(), "%s", label.c_str());
     ImGui::TextColored(kDimColor, "%s, %ux%u", KindName(KindOf(src)), src.width, src.height);
     static const char* kModes[] = {"Normal maps", "Color textures", "Any kind"};
     int mode = int(s.mode);
@@ -1164,7 +1165,7 @@ void App::DrawSimilarWindow() {
 
     ImGui::TextWrapped("Ranked by matching detail, same size, and (for dumps) being saved at nearly the same moment, "
                        "since games load a material's textures together. Check the top results by eye.");
-    if (!s.computed) ImGui::TextColored(kAccentColor, "Analysing this texture...");
+    if (!s.computed) ImGui::TextColored(AccentTextColor(), "Analysing this texture...");
     else if (s.notAnalysed)
         ImGui::TextColored(kDimColor, "%zu candidate(s) not analysed yet; Refresh later for more results.", s.notAnalysed);
     ImGui::Separator();
@@ -1184,7 +1185,7 @@ void App::DrawSimilarWindow() {
         ImGui::BeginGroup();
         ImGui::Text("%u  %s", r.hash, r.isMod ? "(mod)" : "(dump)");
         const std::string* label = labels_.Get(r.hash);
-        if (label) ImGui::TextColored(kAccentColor, "%s", label->c_str());
+        if (label) ImGui::TextColored(AccentTextColor(), "%s", label->c_str());
         ImGui::TextColored(kDimColor, "%s, %ux%u", KindName(r.kind), r.width, r.height);
         ImGui::ProgressBar(r.score, ImVec2(120, 0), (std::to_string(int(r.score * 100)) + "% match").c_str());
         ImGui::SameLine();
@@ -1352,6 +1353,42 @@ void App::DrawSettings() {
                "Writing happens on a background thread so the game does not stall.");
     ImGui::EndDisabled();
 
+    ImGui::SeparatorText("Appearance");
+    {
+        // Applied live while dragging; saved once the colour is chosen.
+        uint32_t& rgb = settings_.accentColor;
+        float col[3] = {((rgb >> 16) & 0xFF) / 255.0f, ((rgb >> 8) & 0xFF) / 255.0f, (rgb & 0xFF) / 255.0f};
+        auto set = [&](uint32_t value, bool save) {
+            rgb = value;
+            ApplyAccentColor(rgb);
+            if (save) settings_.Save();
+        };
+        ImGui::SetNextItemWidth(260);
+        if (ImGui::ColorEdit3("Accent colour", col, ImGuiColorEditFlags_DisplayHex))
+            set((uint32_t(col[0] * 255 + 0.5f) << 16) | (uint32_t(col[1] * 255 + 0.5f) << 8) | uint32_t(col[2] * 255 + 0.5f),
+                false);
+        if (ImGui::IsItemDeactivatedAfterEdit()) settings_.Save();
+
+        struct Preset {
+            const char* name;
+            uint32_t rgb;
+        };
+        static constexpr Preset kPresets[] = {{"Blue", 0x4296FA},   {"Orange", 0xFF8C38}, {"Teal", 0x2EC4B6},
+                                              {"Green", 0x4CB04F},  {"Purple", 0x9B6BFF}, {"Pink", 0xFF5FA2},
+                                              {"Red", 0xE5484D},    {"Grey", 0x8A8F98}};
+        for (const Preset& pr : kPresets) {
+            ImGui::PushID(pr.name);
+            const ImVec4 c(((pr.rgb >> 16) & 0xFF) / 255.0f, ((pr.rgb >> 8) & 0xFF) / 255.0f, (pr.rgb & 0xFF) / 255.0f, 1.0f);
+            if (ImGui::ColorButton(pr.name, c, ImGuiColorEditFlags_NoTooltip, ImVec2(26, 26))) set(pr.rgb, true);
+            ImGui::SetItemTooltip("%s", pr.name);
+            ImGui::PopID();
+            ImGui::SameLine();
+        }
+        ImGui::BeginDisabled(rgb == kDefaultAccent);
+        if (ImGui::Button("Reset")) set(kDefaultAccent, true);
+        ImGui::EndDisabled();
+    }
+
     ImGui::SeparatorText("Labels");
     ImGui::Text("%zu label(s) in %s", labels_.size(), ToUtf8(LabelsFile()).c_str());
     if (ImGui::Button("Import labels...")) ImportLabels();
@@ -1386,7 +1423,7 @@ void App::DrawAbout() {
     ImGui::Spacing();
 
     ImGui::SeparatorText("Credits");
-    ImGui::TextColored(kAccentColor, "Resorep by RayWing (2017)");
+    ImGui::TextColored(AccentTextColor(), "Resorep by RayWing (2017)");
     ImGui::TextWrapped("The original DirectX 11 texture replacer that ReResorep rewrites. To keep existing "
                        "mods working, the texture hash, the encrypted resorep1 pack format and the mod file "
                        "naming follow Resorep exactly; they were worked out from its proxy DLL. "
@@ -1395,7 +1432,7 @@ void App::DrawAbout() {
         OpenWithShell(L"https://www.undertow.club/threads/tool-resorep-directx-11-texture-replacer.8402/");
     ImGui::Spacing();
 
-    ImGui::TextColored(kAccentColor, "Dear ImGui by Omar Cornut and contributors");
+    ImGui::TextColored(AccentTextColor(), "Dear ImGui by Omar Cornut and contributors");
     ImGui::TextWrapped("The user interface library. MIT License.");
     if (ImGui::SmallButton("Dear ImGui on GitHub")) OpenWithShell(L"https://github.com/ocornut/imgui");
     ImGui::SameLine();
@@ -1408,7 +1445,7 @@ void App::DrawAbout() {
     }
     ImGui::Spacing();
 
-    ImGui::TextColored(kAccentColor, "Blowfish by Bruce Schneier");
+    ImGui::TextColored(AccentTextColor(), "Blowfish by Bruce Schneier");
     ImGui::TextWrapped("The public-domain cipher used by Resorep's encrypted packs. Its tables are computed "
                        "from the digits of pi (tools/gen_blowfish_tables.py).");
 
@@ -1483,7 +1520,7 @@ void App::DrawStatusBar() {
     }
     if (const size_t pending = analyzer_->Pending()) {
         ImGui::SameLine();
-        ImGui::TextColored(kAccentColor, "| detecting texture types: %zu left", pending);
+        ImGui::TextColored(AccentTextColor(), "| detecting texture types: %zu left", pending);
     }
 }
 
