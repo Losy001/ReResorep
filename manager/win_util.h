@@ -27,6 +27,18 @@ void OpenWithShell(const std::filesystem::path& path);
 // Starts a program with its own folder as working directory. Returns an error message or "".
 std::string LaunchProgram(const std::filesystem::path& exe);
 
+// Process ids running exactly this exe (full path, case-insensitive).
+std::vector<DWORD> FindProcesses(const std::filesystem::path& exe);
+
+struct CloseResult {
+    size_t closed = 0;  // exited after being asked to close
+    size_t killed = 0;  // had to be ended forcefully
+    std::string error;
+};
+// Asks every process running `exe` to close (WM_CLOSE to its windows), waits up to `grace`,
+// then ends whatever is still running. Blocks; call off the UI thread.
+CloseResult CloseProgram(const std::filesystem::path& exe, DWORD graceMs);
+
 // CompanyName from the file's version resource ("" if none).
 std::wstring FileCompanyName(const std::filesystem::path& path);
 // "major.minor.patch" from the file's version resource ("" if none).

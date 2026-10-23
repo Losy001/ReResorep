@@ -20,6 +20,7 @@
 #include "mod_package.h"
 #include "library.h"
 #include "thumbnails.h"
+#include "win_util.h"
 
 namespace resorep::ui {
 
@@ -147,6 +148,12 @@ private:
     bool openDeleteDumpsPopup_ = false;
     std::future<size_t> deleteDumpsJob_;  // result: how many dumps could not be deleted
     std::shared_ptr<std::atomic<size_t>> deleteProgress_;  // files processed so far
+    // Games tab: running games and the Close button's background job.
+    static constexpr DWORD kCloseGraceMs = 10000;
+    std::unordered_map<std::wstring, bool> gameRunning_;
+    std::chrono::steady_clock::time_point lastRunningCheck_;
+    std::future<CloseResult> closeJob_;
+    std::filesystem::path closingExe_;
     size_t deleteTotal_ = 0;
 
     Tab tab_ = Tab::Mods;

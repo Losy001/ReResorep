@@ -1,6 +1,7 @@
 #include "win_util.h"
 
 #include <shellapi.h>
+#include <tlhelp32.h>
 #include <shlobj.h>
 #include <shobjidl.h>
 #include <wrl/client.h>
@@ -132,6 +133,72 @@ std::string FileVersionString(const fs::path& path) {
         return {};
     return std::to_string(HIWORD(info->dwFileVersionMS)) + "." + std::to_string(LOWORD(info->dwFileVersionMS)) + "." +
            std::to_string(HIWORD(info->dwFileVersionLS));
+}
+
+std::vector<DWORD> FindProcesses(const fs::path& exe) {
+    std::vector<DWORD> pids;
+    std::error_code ec;
+    const fs::path target = fs::weakly_canonical(exe, ec);
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap == INVALID_HANDLE_VALUE) return pids;
+    PROCESSENTRY32W pe{sizeof(pe)};
+    for (BOOL ok = Process32FirstW(snap, &pe); ok; ok = Process32NextW(snap, &pe)) {
+        // Cheap name check first; only matching names get their full path looked up.
+        if (_wcsicmp(pe.szExeFile, exe.filename().c_str()) != 0) continue;
+        HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pe.th32ProcessID);
+        if (!h) continue;
+        wchar_t path[MAX_PATH * 4];
+        DWORD len = DWORD(std::size(path));
+        if (QueryFullProcessImageNameW(h, 0, path, &len) &&
+            _wcsicmp(fs::weakly_canonical(fs::path(std::wstring(path, len)), ec).c_str(), target.c_str()) == 0)
+            pids.push_back(pe.th32ProcessID);
+        CloseHandle(h);
+    }
+    CloseHandle(snap);
+    return pids;
+}
+
+CloseResult CloseProgram(const fs::path& exe, DWORD graceMs) {
+    CloseResult r;
+    std::vector<HANDLE> handles;
+    for (DWORD pid : FindProcesses(exe)) {
+        if (HANDLE h = OpenProcess(SYNCHRONIZE | PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid))
+            handles.push_back(h);
+        else
+            r.error = "Access denied to the game process (try running ReResorep as administrator)";
+    }
+    if (handles.empty()) return r;
+
+    // The polite way: what clicking the window's close button does.
+    std::vector<DWORD> pids;
+    for (HANDLE h : handles) pids.push_back(GetProcessId(h));
+    EnumWindows(
+        [](HWND hwnd, LPARAM param) -> BOOL {
+            const auto& ids = *reinterpret_cast<const std::vector<DWORD>*>(param);
+            DWORD pid = 0;
+            GetWindowThreadProcessId(hwnd, &pid);
+            if (std::find(ids.begin(), ids.end(), pid) != ids.end() && !GetWindow(hwnd, GW_OWNER))
+                PostMessageW(hwnd, WM_CLOSE, 0, 0);
+            return TRUE;
+        },
+        reinterpret_cast<LPARAM>(&pids));
+
+    const ULONGLONG deadline = GetTickCount64() + graceMs;
+    for (HANDLE h : handles) {
+        const ULONGLONG now = GetTickCount64();
+        const DWORD wait = now < deadline ? DWORD(deadline - now) : 0;
+        if (WaitForSingleObject(h, wait) == WAIT_OBJECT_0) {
+            ++r.closed;
+            continue;
+        }
+        // Still running after the grace period: end it.
+        if (TerminateProcess(h, 1) && WaitForSingleObject(h, 5000) == WAIT_OBJECT_0)
+            ++r.killed;
+        else
+            r.error = "Could not end the game process (try running ReResorep as administrator)";
+    }
+    for (HANDLE h : handles) CloseHandle(h);
+    return r;
 }
 
 std::wstring FileCompanyName(const fs::path& path) {

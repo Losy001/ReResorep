@@ -472,6 +472,17 @@ void App::Frame() {
     ImGui::End();
     DrawSimilarWindow();
 
+    if (closeJob_.valid() && closeJob_.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+        const CloseResult r = closeJob_.get();
+        const std::string name = ToUtf8(closingExe_.filename());
+        std::string msg = r.killed ? name + " did not close within " + std::to_string(kCloseGraceMs / 1000) +
+                                         " seconds, so it was ended forcefully."
+                          : r.closed ? "Closed " + name + "."
+                                     : name + " was not running.";
+        Status(r.error, msg);
+        lastRunningCheck_ = {};
+    }
+
     if (deleteDumpsJob_.valid() &&
         deleteDumpsJob_.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
         const size_t failed = deleteDumpsJob_.get();
@@ -1212,6 +1223,13 @@ void App::DrawSimilarWindow() {
 }
 
 void App::DrawGames() {
+    // Which games are running, checked about once a second while this tab is open.
+    if (std::chrono::steady_clock::now() - lastRunningCheck_ > std::chrono::seconds(1)) {
+        lastRunningCheck_ = std::chrono::steady_clock::now();
+        gameRunning_.clear();
+        for (const GameState& g : games_) gameRunning_[g.exe.wstring()] = !FindProcesses(g.exe).empty();
+    }
+
     if (ImGui::Button("Add game...")) {
         auto exe = PickFiles(hwnd_, L"Choose the game executable", {{L"Programs", L"*.exe"}}, false);
         if (!exe.empty()) {
@@ -1241,12 +1259,13 @@ void App::DrawGames() {
         return;
     ImGui::TableSetupColumn("Game", ImGuiTableColumnFlags_WidthStretch, 3.0f);
     ImGui::TableSetupColumn("Status", ImGuiTableColumnFlags_WidthStretch, 1.4f);
-    ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 400.0f);
+    ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 470.0f);
     ImGui::TableHeadersRow();
 
     std::optional<size_t> remove;
     for (size_t i = 0; i < games_.size(); ++i) {
         const GameState& g = games_[i];
+        const bool running = gameRunning_.count(g.exe.wstring()) && gameRunning_[g.exe.wstring()];
         ImGui::PushID(int(i));
         ImGui::TableNextRow();
         ImGui::TableNextColumn();
@@ -1258,6 +1277,7 @@ void App::DrawGames() {
                              : g.status == ProxyStatus::NotInstalled ? kDimColor
                                                                      : ImVec4(1.0f, 0.75f, 0.3f, 1.0f);
         ImGui::TextColored(color, "%s", StatusText(g.status));
+        if (running) ImGui::TextColored(kOkColor, "Running");
         if (!g.proxyVersion.empty()) {
             ImGui::TextColored(kDimColor, "proxy %s", g.proxyVersion.c_str());
             if (g.status == ProxyStatus::Outdated)
@@ -1274,14 +1294,36 @@ void App::DrawGames() {
             ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18f, 0.48f, 0.26f, 1.0f));
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.22f, 0.60f, 0.32f, 1.0f));
             ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.15f, 0.40f, 0.22f, 1.0f));
+            ImGui::BeginDisabled(running);
             if (ImGui::Button("Start")) {
                 const std::string e = LaunchProgram(g.exe);
                 Status(e, "Started " + ToUtf8(g.exe.filename()) +
                               (installed ? "" : " (ReResorep is not installed for it, so no mods apply)"));
+                lastRunningCheck_ = {};  // pick the new process up right away
+            }
+            ImGui::EndDisabled();
+            ImGui::PopStyleColor(3);
+            ImGui::SetItemTooltip(running     ? "The game is already running"
+                                  : installed ? "Launch the game with your mods"
+                                              : "Launch the game (install ReResorep first for mods to apply)");
+            ImGui::SameLine();
+
+            const bool closingThis = closeJob_.valid() && closingExe_ == g.exe;
+            ImGui::BeginDisabled(!running || closeJob_.valid());
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.55f, 0.18f, 0.18f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.70f, 0.24f, 0.24f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.45f, 0.14f, 0.14f, 1.0f));
+            if (ImGui::Button(closingThis ? "Closing...###close" : "Close###close")) {
+                closingExe_ = g.exe;
+                // Ask nicely, give it time to shut down, then end it; off the UI thread.
+                closeJob_ = std::async(std::launch::async, [exe = g.exe] { return CloseProgram(exe, kCloseGraceMs); });
+                Status("", "Closing " + ToUtf8(g.exe.filename()) + "...");
             }
             ImGui::PopStyleColor(3);
-            ImGui::SetItemTooltip(installed ? "Launch the game with your mods"
-                                            : "Launch the game (install ReResorep first for mods to apply)");
+            ImGui::EndDisabled();
+            ImGui::SetItemTooltip("Asks the game to exit. If it is still running after %u seconds, it is ended "
+                                  "forcefully (unsaved progress in the game is lost).",
+                                  unsigned(kCloseGraceMs / 1000));
             ImGui::SameLine();
             // These rebuild games_, so they run after the table is drawn.
             if (ImGui::Button(installed ? "Reinstall" : g.status == ProxyStatus::NotInstalled ? "Install" : "Update")) {
