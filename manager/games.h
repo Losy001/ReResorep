@@ -42,6 +42,7 @@ struct GameState {
     std::filesystem::path exe;
     ProxyStatus status = ProxyStatus::NotInstalled;
     bool chainsOtherD3D11 = false;  // a non-Microsoft ori_d3d11.dll (e.g. ReShade) is chained
+    std::string proxyVersion;       // version of the installed proxy, if any
 };
 
 // The proxy the manager installs: bin/proxy/d3d11.dll next to ReResorep.exe.

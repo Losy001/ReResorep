@@ -13,6 +13,7 @@
 
 #include "dds.h"
 #include "settings.h"
+#include "version.h"
 
 namespace resorep::proxy {
 namespace fs = std::filesystem;
@@ -78,7 +79,7 @@ void Runtime::EnsureStarted() {
         Rescan();
         std::thread([this] { WatchThread(); }).detach();
         std::thread([this] { DumpThread(); }).detach();
-        Log(false, "ReResorep proxy started; %zu modded textures indexed", index()->size());
+        Log(false, "ReResorep proxy " RERESOREP_VERSION_STRING " started; %zu modded textures indexed", index()->size());
     });
 }
 

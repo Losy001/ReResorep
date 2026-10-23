@@ -10,6 +10,10 @@ add_library(imgui STATIC
 target_include_directories(imgui PUBLIC ${IMGUI} ${IMGUI}/backends)
 target_compile_options(imgui PRIVATE /W0)
 
+# Licence texts compiled into the About tab, so they always ship with the exe.
+file(READ ${IMGUI}/LICENSE.txt IMGUI_LICENSE)
+configure_file(licenses.h.in ${RERESOREP_GENERATED}/licenses.h @ONLY)
+
 add_executable(ReResorep WIN32
     main.cpp
     app.cpp

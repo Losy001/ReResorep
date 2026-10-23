@@ -109,6 +109,12 @@ GameState InspectGame(const fs::path& exe) {
         else if (IsLegacyProxy(dll)) st.status = ProxyStatus::LegacyResorep;
     }
     st.chainsOtherD3D11 = fs::exists(ori) && !IsMicrosoftDll(ori) && !IsAnyProxy(ori);
+    if (st.status == ProxyStatus::Installed || st.status == ProxyStatus::Outdated) {
+        st.proxyVersion = FileVersionString(dll);
+        if (st.proxyVersion.empty()) st.proxyVersion = "pre-2.0 build";  // built before version info existed
+    } else if (st.status == ProxyStatus::LegacyResorep) {
+        st.proxyVersion = "1.x";
+    }
     return st;
 }
 

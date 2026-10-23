@@ -26,6 +26,7 @@ add_library(proxy SHARED
     proxy_main.cpp
     runtime.cpp
     texture_hook.cpp
+    proxy.rc
     ${GEN}/stubs.asm
     ${GEN}/d3d11.def
 )

@@ -15,6 +15,10 @@ add_compile_options($<$<COMPILE_LANGUAGE:CXX>:/W4> $<$<COMPILE_LANGUAGE:CXX>:/pe
 
 set(RERESOREP_BIN ${CMAKE_BINARY_DIR}/bin)
 
+# Single source of the version: project(... VERSION x.y.z) above.
+set(RERESOREP_GENERATED ${CMAKE_BINARY_DIR}/generated)
+configure_file(core/version.h.in ${RERESOREP_GENERATED}/version.h @ONLY)
+
 add_library(resorep_core STATIC
     core/blowfish.cpp
     core/dds.cpp
@@ -26,7 +30,7 @@ add_library(resorep_core STATIC
     core/texture_index.cpp
     core/zip.cpp
 )
-target_include_directories(resorep_core PUBLIC core)
+target_include_directories(resorep_core PUBLIC core ${RERESOREP_GENERATED})
 
 add_subdirectory(proxy)
 add_subdirectory(manager)

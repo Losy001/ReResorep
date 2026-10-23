@@ -1,2 +1,8 @@
 // Generated icon: tools/gen_icon.py. Resource 1 is also what Explorer shows for the exe.
 1 ICON "app.ico"
+
+#define RR_FILE_DESCRIPTION  "ReResorep texture manager"
+#define RR_ORIGINAL_FILENAME "ReResorep.exe"
+#define RR_INTERNAL_NAME     "ReResorep"
+#define RR_FILE_TYPE         VFT_APP
+#include "version_info.rc.inc"

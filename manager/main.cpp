@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "app.h"
+#include "version.h"
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM, LPARAM);
 
@@ -150,7 +151,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     RegisterClassExW(&wc);
 
     const float scale = ImGui_ImplWin32_GetDpiScaleForMonitor(MonitorFromPoint(POINT{0, 0}, MONITOR_DEFAULTTOPRIMARY));
-    HWND hwnd = CreateWindowExW(WS_EX_ACCEPTFILES, wc.lpszClassName, L"ReResorep - Texture Manager", WS_OVERLAPPEDWINDOW,
+    HWND hwnd = CreateWindowExW(WS_EX_ACCEPTFILES, wc.lpszClassName, L"ReResorep " RERESOREP_VERSION_WSTRING L" - Texture Manager", WS_OVERLAPPEDWINDOW,
                                 CW_USEDEFAULT, CW_USEDEFAULT, int(1280 * scale), int(800 * scale), nullptr, nullptr,
                                 instance, nullptr);
     SetWindowIcons(hwnd);

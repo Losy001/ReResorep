@@ -6,6 +6,7 @@
 #include <filesystem>
 
 #include "runtime.h"
+#include "version.h"
 #include "texture_hook.h"
 
 namespace {
@@ -49,7 +50,7 @@ void* g_origProcs[kPassthroughCount] = {};
 void ResorepEnsureLoaded() { InitOnceExecuteOnce(&g_loadOnce, LoadOnce, nullptr, nullptr); }
 
 // Lets the manager (and ourselves) recognise this DLL without relying on file sizes.
-__declspec(dllexport) DWORD WINAPI ReResorepProxyVersion() { return 1; }
+__declspec(dllexport) DWORD WINAPI ReResorepProxyVersion() { return RERESOREP_VERSION_NUMBER; }
 }
 
 namespace {

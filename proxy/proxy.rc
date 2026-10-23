@@ -1,0 +1,7 @@
+// Version info for the proxy d3d11.dll. Its CompanyName ("ReResorep") also keeps the
+// manager from mistaking it for Microsoft's d3d11.dll.
+#define RR_FILE_DESCRIPTION  "ReResorep texture replacer (Direct3D 11 proxy)"
+#define RR_ORIGINAL_FILENAME "d3d11.dll"
+#define RR_INTERNAL_NAME     "ReResorep proxy"
+#define RR_FILE_TYPE         VFT_DLL
+#include "version_info.rc.inc"

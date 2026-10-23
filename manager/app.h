@@ -2,6 +2,7 @@
 #include <windows.h>
 #include <d3d11.h>
 
+#include <atomic>
 #include <chrono>
 #include <functional>
 #include <future>
@@ -29,7 +30,7 @@ public:
     void OnDropFiles(const std::vector<std::filesystem::path>& files);
 
 private:
-    enum class Tab { Mods, Dumps, Games, Settings };
+    enum class Tab { Mods, Dumps, Games, Settings, About };
     struct Selection {
         std::filesystem::path path;
         bool isMod = false;
@@ -62,6 +63,7 @@ private:
     void DrawDetails();
     void DrawGames();
     void DrawSettings();
+    void DrawAbout();
     void DrawImportPopup();
     void DrawStatusBar();
     void DrawDeleteDumpsPopup();
@@ -143,7 +145,9 @@ private:
     bool openExportPopup_ = false;
     bool openImportModPopup_ = false;
     bool openDeleteDumpsPopup_ = false;
-    std::future<size_t> deleteDumpsJob_;  // files moved to the Recycle Bin (0 if it failed)
+    std::future<size_t> deleteDumpsJob_;  // result: how many dumps could not be deleted
+    std::shared_ptr<std::atomic<size_t>> deleteProgress_;  // files processed so far
+    size_t deleteTotal_ = 0;
 
     Tab tab_ = Tab::Mods;
     std::optional<Selection> selection_;

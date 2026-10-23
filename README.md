@@ -135,3 +135,19 @@ The output goes to `build/bin/`: `ReResorep.exe` and `proxy/d3d11.dll`. Ship tha
   The AES in the earlier reconstructed source was wrong.
 - Lookup order: hash, +1, −1, +2, −2. Several files for one hash: the first by name wins.
 - x64 only. Siege is 64-bit; the old 32-bit proxy was not ported.
+
+## Version and credits
+
+The version is set once, in `CMakeLists.txt` (`project(... VERSION 2.0.0)`). From there it goes
+into:
+
+- the window title,
+- the **About** tab,
+- the version info of both `ReResorep.exe` and the proxy `d3d11.dll` (Explorer → Properties →
+  Details),
+- the proxy's `dll.log`.
+
+The **Games** tab shows which proxy version each game has installed.
+
+Credits are in [CREDITS.md](CREDITS.md) and in the app's **About** tab: the original Resorep by
+RayWing, Dear ImGui (MIT) and Blowfish.

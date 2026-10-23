@@ -11,6 +11,8 @@
 #include <iterator>
 
 #include "dds.h"
+#include "licenses.h"
+#include "version.h"
 #include "mod_state.h"
 #include "texture_index.h"
 #include "win_util.h"
@@ -430,6 +432,7 @@ void App::Frame() {
         tab(dumpsLabel, Tab::Dumps);
         tab("Games", Tab::Games);
         tab("Settings", Tab::Settings);
+        tab("About", Tab::About);
         ImGui::EndTabBar();
     }
 
@@ -457,6 +460,7 @@ void App::Frame() {
         }
         case Tab::Games: DrawGames(); break;
         case Tab::Settings: DrawSettings(); break;
+        case Tab::About: DrawAbout(); break;
     }
     ImGui::EndChild();
     DrawStatusBar();
@@ -469,10 +473,13 @@ void App::Frame() {
 
     if (deleteDumpsJob_.valid() &&
         deleteDumpsJob_.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
-        const size_t moved = deleteDumpsJob_.get();
+        const size_t failed = deleteDumpsJob_.get();
+        const size_t deleted = deleteProgress_ ? deleteProgress_->load() - failed : 0;
         library_.Refresh();
-        Status(moved ? "" : "Not all dumps were moved (cancelled, or a file is in use)",
-               "Moved " + std::to_string(moved) + " dumps to the Recycle Bin. Labels were kept.");
+        Status(failed ? std::to_string(failed) + " dump(s) could not be deleted (in use by the game?); " +
+                            std::to_string(deleted) + " deleted."
+                      : "",
+               "Deleted " + std::to_string(deleted) + " dumps. Labels were kept.");
     }
 
     // Actions that rescan the library run here, after nothing points into it any more.
@@ -687,7 +694,11 @@ void App::DrawToolbarDumps() {
     ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.55f, 0.18f, 0.18f, 1.0f));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.70f, 0.24f, 0.24f, 1.0f));
     ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.45f, 0.14f, 0.14f, 1.0f));
-    if (ImGui::Button(deleting ? "Deleting dumps..." : "Delete all dumps...")) openDeleteDumpsPopup_ = true;
+    char deleteLabel[64] = "Delete all dumps...";
+    if (deleting && deleteProgress_)
+        snprintf(deleteLabel, sizeof(deleteLabel), "Deleting %zu / %zu...###deleteall", deleteProgress_->load(),
+                 deleteTotal_);
+    if (ImGui::Button(deleteLabel)) openDeleteDumpsPopup_ = true;
     ImGui::PopStyleColor(3);
     ImGui::EndDisabled();
     DrawViewOptions(false);
@@ -702,10 +713,10 @@ void App::DrawDeleteDumpsPopup() {
 
     uint64_t bytes = 0;
     for (const auto& d : library_.dumps()) bytes += d.size;
-    ImGui::Text("Move all %zu dumped textures (%s) to the Recycle Bin?", library_.dumps().size(),
-                FormatBytes(bytes).c_str());
+    ImGui::Text("Permanently delete all %zu dumped textures (%s)?", library_.dumps().size(), FormatBytes(bytes).c_str());
     ImGui::TextColored(kDimColor, "%s", ToUtf8(library_.originalFolder()).c_str());
     ImGui::Spacing();
+    ImGui::TextColored(kErrorColor, "They are not moved to the Recycle Bin. This cannot be undone.");
     ImGui::BulletText("Your labels are kept (labels.txt). They show again when a texture is dumped again.");
     ImGui::BulletText("Your mods are not touched.");
     ImGui::BulletText("Other files in that folder are left alone.");
@@ -715,19 +726,22 @@ void App::DrawDeleteDumpsPopup() {
 
     ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.55f, 0.18f, 0.18f, 1.0f));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.70f, 0.24f, 0.24f, 1.0f));
-    if (ImGui::Button("Move to Recycle Bin", ImVec2(200, 0))) {
+    if (ImGui::Button("Delete permanently", ImVec2(200, 0))) {
         std::vector<fs::path> paths;
         for (const auto& d : library_.dumps()) paths.push_back(d.path);
-        const size_t count = paths.size();
-        // Off the UI thread: thousands of files take a while; Windows shows its own progress.
-        deleteDumpsJob_ = std::async(std::launch::async, [paths = std::move(paths), count] {
-            CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
-            const bool ok = MoveFilesToRecycleBin(paths);
-            CoUninitialize();
-            return ok ? count : size_t(0);
+        deleteTotal_ = paths.size();
+        deleteProgress_ = std::make_shared<std::atomic<size_t>>(0);
+        // Off the UI thread so thousands of files don't freeze the window; the button shows progress.
+        deleteDumpsJob_ = std::async(std::launch::async, [paths = std::move(paths), progress = deleteProgress_] {
+            size_t failed = 0;
+            for (const fs::path& p : paths) {
+                std::error_code ec;
+                if (!fs::remove(p, ec) && fs::exists(p, ec)) ++failed;  // already gone counts as done
+                ++*progress;
+            }
+            return failed;
         });
         if (selection_ && !selection_->isMod) selection_.reset();
-        Status("", "Moving " + std::to_string(count) + " dumps to the Recycle Bin...");
         ImGui::CloseCurrentPopup();
     }
     ImGui::PopStyleColor(2);
@@ -1243,6 +1257,11 @@ void App::DrawGames() {
                              : g.status == ProxyStatus::NotInstalled ? kDimColor
                                                                      : ImVec4(1.0f, 0.75f, 0.3f, 1.0f);
         ImGui::TextColored(color, "%s", StatusText(g.status));
+        if (!g.proxyVersion.empty()) {
+            ImGui::TextColored(kDimColor, "proxy %s", g.proxyVersion.c_str());
+            if (g.status == ProxyStatus::Outdated)
+                ImGui::SetItemTooltip("This ReResorep has proxy %s. Click Update to install it.", RERESOREP_VERSION_STRING);
+        }
         if (g.chainsOtherD3D11) {
             ImGui::TextColored(kDimColor, "chains ori_d3d11.dll");
             ImGui::SetItemTooltip("Another d3d11.dll (for example ReShade) was kept as ori_d3d11.dll and still loads.");
@@ -1355,6 +1374,50 @@ void App::DrawSettings() {
     ImGui::Spacing();
     ImGui::TextColored(kDimColor, "Changes are saved immediately and reach a running game within a second.");
     if (changed) ApplySettings();
+}
+
+void App::DrawAbout() {
+    ImGui::PushTextWrapPos(ImGui::GetContentRegionAvail().x * 0.95f);
+    ImGui::SetWindowFontScale(1.6f);
+    ImGui::TextUnformatted("ReResorep " RERESOREP_VERSION_STRING);
+    ImGui::SetWindowFontScale(1.0f);
+    ImGui::TextColored(kDimColor, "Texture replacer and texture manager for Direct3D 11 games.");
+    ImGui::Text("Made by %s.", RERESOREP_AUTHOR);
+    ImGui::Spacing();
+
+    ImGui::SeparatorText("Credits");
+    ImGui::TextColored(kAccentColor, "Resorep by RayWing (2017)");
+    ImGui::TextWrapped("The original DirectX 11 texture replacer that ReResorep rewrites. To keep existing "
+                       "mods working, the texture hash, the encrypted resorep1 pack format and the mod file "
+                       "naming follow Resorep exactly; they were worked out from its proxy DLL. "
+                       "No Resorep code is included.");
+    if (ImGui::SmallButton("Original Resorep release thread"))
+        OpenWithShell(L"https://www.undertow.club/threads/tool-resorep-directx-11-texture-replacer.8402/");
+    ImGui::Spacing();
+
+    ImGui::TextColored(kAccentColor, "Dear ImGui by Omar Cornut and contributors");
+    ImGui::TextWrapped("The user interface library. MIT License.");
+    if (ImGui::SmallButton("Dear ImGui on GitHub")) OpenWithShell(L"https://github.com/ocornut/imgui");
+    ImGui::SameLine();
+    static bool showLicense = false;
+    if (ImGui::SmallButton(showLicense ? "Hide licence" : "Show licence")) showLicense = !showLicense;
+    if (showLicense) {
+        ImGui::BeginChild("license", ImVec2(0, ImGui::GetTextLineHeightWithSpacing() * 12), ImGuiChildFlags_Borders);
+        ImGui::TextUnformatted(kImGuiLicense);
+        ImGui::EndChild();
+    }
+    ImGui::Spacing();
+
+    ImGui::TextColored(kAccentColor, "Blowfish by Bruce Schneier");
+    ImGui::TextWrapped("The public-domain cipher used by Resorep's encrypted packs. Its tables are computed "
+                       "from the digits of pi (tools/gen_blowfish_tables.py).");
+
+    ImGui::SeparatorText("Please note");
+    ImGui::TextWrapped("ReResorep is a fan-made modding tool and is not affiliated with or endorsed by Ubisoft "
+                       "or any game developer. Games with anti-cheat (for example BattlEye in online Rainbow Six "
+                       "Siege) can detect a replacement d3d11.dll and ban accounts: use it for offline and modded "
+                       "setups only.");
+    ImGui::PopTextWrapPos();
 }
 
 void App::DrawImportPopup() {

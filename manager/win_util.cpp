@@ -95,22 +95,6 @@ bool MoveToRecycleBin(const fs::path& path) {
     return SHFileOperationW(&op) == 0 && !op.fAnyOperationsAborted;
 }
 
-bool MoveFilesToRecycleBin(const std::vector<fs::path>& paths) {
-    if (paths.empty()) return true;
-    std::wstring from;  // double-null-terminated list
-    for (const fs::path& p : paths) {
-        from += p.wstring();
-        from.push_back(L'\0');
-    }
-    from.push_back(L'\0');
-    SHFILEOPSTRUCTW op{};
-    op.wFunc = FO_DELETE;
-    op.pFrom = from.c_str();
-    op.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_WANTNUKEWARNING | FOF_NOERRORUI;
-    op.lpszProgressTitle = L"Moving dumps to the Recycle Bin";
-    return SHFileOperationW(&op) == 0 && !op.fAnyOperationsAborted;
-}
-
 void ShowInExplorer(const fs::path& path) {
     if (PIDLIST_ABSOLUTE pidl = ILCreateFromPathW(path.c_str())) {
         SHOpenFolderAndSelectItems(pidl, 0, nullptr, 0);
@@ -134,6 +118,20 @@ std::string LaunchProgram(const fs::path& exe) {
     if (ShellExecuteExW(&info)) return {};
     const DWORD err = GetLastError();
     return err == ERROR_CANCELLED ? "Start was cancelled" : "Could not start the game (error " + std::to_string(err) + ")";
+}
+
+std::string FileVersionString(const fs::path& path) {
+    DWORD ignored = 0;
+    const DWORD size = GetFileVersionInfoSizeW(path.c_str(), &ignored);
+    if (!size) return {};
+    std::vector<uint8_t> data(size);
+    VS_FIXEDFILEINFO* info = nullptr;
+    UINT len = 0;
+    if (!GetFileVersionInfoW(path.c_str(), 0, size, data.data()) ||
+        !VerQueryValueW(data.data(), L"\\", reinterpret_cast<void**>(&info), &len) || !info)
+        return {};
+    return std::to_string(HIWORD(info->dwFileVersionMS)) + "." + std::to_string(LOWORD(info->dwFileVersionMS)) + "." +
+           std::to_string(HIWORD(info->dwFileVersionLS));
 }
 
 std::wstring FileCompanyName(const fs::path& path) {
