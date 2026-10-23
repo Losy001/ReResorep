@@ -4,6 +4,7 @@
 
 #include <chrono>
 #include <functional>
+#include <future>
 #include <memory>
 #include <optional>
 #include <string>
@@ -63,6 +64,7 @@ private:
     void DrawSettings();
     void DrawImportPopup();
     void DrawStatusBar();
+    void DrawDeleteDumpsPopup();
     void DrawSimilarWindow();
     void DrawLabelEditor(const TextureFile& file, float width);
 
@@ -140,6 +142,8 @@ private:
     std::optional<ImportModDialog> importModDialog_;
     bool openExportPopup_ = false;
     bool openImportModPopup_ = false;
+    bool openDeleteDumpsPopup_ = false;
+    std::future<size_t> deleteDumpsJob_;  // files moved to the Recycle Bin (0 if it failed)
 
     Tab tab_ = Tab::Mods;
     std::optional<Selection> selection_;

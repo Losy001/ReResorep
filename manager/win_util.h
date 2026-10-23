@@ -22,6 +22,9 @@ std::optional<std::filesystem::path> PickSaveFile(HWND owner, const wchar_t* tit
                                                   const wchar_t* defaultExtension = L"txt");
 
 bool MoveToRecycleBin(const std::filesystem::path& path);
+// Many files in one shell operation, with Windows' progress dialog. Windows asks before
+// deleting permanently if they do not fit in the Recycle Bin. Blocks; call off the UI thread.
+bool MoveFilesToRecycleBin(const std::vector<std::filesystem::path>& paths);
 void ShowInExplorer(const std::filesystem::path& path);
 void OpenWithShell(const std::filesystem::path& path);
 // Starts a program with its own folder as working directory. Returns an error message or "".

@@ -463,8 +463,17 @@ void App::Frame() {
     DrawImportPopup();
     DrawFolderPopups();
     DrawPackagePopups();
+    DrawDeleteDumpsPopup();
     ImGui::End();
     DrawSimilarWindow();
+
+    if (deleteDumpsJob_.valid() &&
+        deleteDumpsJob_.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+        const size_t moved = deleteDumpsJob_.get();
+        library_.Refresh();
+        Status(moved ? "" : "Not all dumps were moved (cancelled, or a file is in use)",
+               "Moved " + std::to_string(moved) + " dumps to the Recycle Bin. Labels were kept.");
+    }
 
     // Actions that rescan the library run here, after nothing points into it any more.
     auto actions = std::move(deferred_);
@@ -672,7 +681,59 @@ void App::DrawToolbarDumps() {
         ImGui::SameLine();
         ImGui::TextColored(kDimColor, "Dumping is off - enable it in Settings.");
     }
+    ImGui::SameLine();
+    const bool deleting = deleteDumpsJob_.valid();
+    ImGui::BeginDisabled(deleting || library_.dumps().empty());
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.55f, 0.18f, 0.18f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.70f, 0.24f, 0.24f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.45f, 0.14f, 0.14f, 1.0f));
+    if (ImGui::Button(deleting ? "Deleting dumps..." : "Delete all dumps...")) openDeleteDumpsPopup_ = true;
+    ImGui::PopStyleColor(3);
+    ImGui::EndDisabled();
     DrawViewOptions(false);
+}
+
+void App::DrawDeleteDumpsPopup() {
+    if (openDeleteDumpsPopup_) {
+        ImGui::OpenPopup("Delete all dumps");
+        openDeleteDumpsPopup_ = false;
+    }
+    if (!ImGui::BeginPopupModal("Delete all dumps", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) return;
+
+    uint64_t bytes = 0;
+    for (const auto& d : library_.dumps()) bytes += d.size;
+    ImGui::Text("Move all %zu dumped textures (%s) to the Recycle Bin?", library_.dumps().size(),
+                FormatBytes(bytes).c_str());
+    ImGui::TextColored(kDimColor, "%s", ToUtf8(library_.originalFolder()).c_str());
+    ImGui::Spacing();
+    ImGui::BulletText("Your labels are kept (labels.txt). They show again when a texture is dumped again.");
+    ImGui::BulletText("Your mods are not touched.");
+    ImGui::BulletText("Other files in that folder are left alone.");
+    if (settings_.modCreatorMode && settings_.saveTextures)
+        ImGui::BulletText("Dumping is still on, so a running game will dump textures again.");
+    ImGui::Spacing();
+
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.55f, 0.18f, 0.18f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.70f, 0.24f, 0.24f, 1.0f));
+    if (ImGui::Button("Move to Recycle Bin", ImVec2(200, 0))) {
+        std::vector<fs::path> paths;
+        for (const auto& d : library_.dumps()) paths.push_back(d.path);
+        const size_t count = paths.size();
+        // Off the UI thread: thousands of files take a while; Windows shows its own progress.
+        deleteDumpsJob_ = std::async(std::launch::async, [paths = std::move(paths), count] {
+            CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+            const bool ok = MoveFilesToRecycleBin(paths);
+            CoUninitialize();
+            return ok ? count : size_t(0);
+        });
+        if (selection_ && !selection_->isMod) selection_.reset();
+        Status("", "Moving " + std::to_string(count) + " dumps to the Recycle Bin...");
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::PopStyleColor(2);
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", ImVec2(120, 0)) || ImGui::IsKeyPressed(ImGuiKey_Escape)) ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
 }
 
 void App::SortVisible(std::vector<const TextureFile*>& files, bool isMod) const {

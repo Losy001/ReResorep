@@ -95,6 +95,22 @@ bool MoveToRecycleBin(const fs::path& path) {
     return SHFileOperationW(&op) == 0 && !op.fAnyOperationsAborted;
 }
 
+bool MoveFilesToRecycleBin(const std::vector<fs::path>& paths) {
+    if (paths.empty()) return true;
+    std::wstring from;  // double-null-terminated list
+    for (const fs::path& p : paths) {
+        from += p.wstring();
+        from.push_back(L'\0');
+    }
+    from.push_back(L'\0');
+    SHFILEOPSTRUCTW op{};
+    op.wFunc = FO_DELETE;
+    op.pFrom = from.c_str();
+    op.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_WANTNUKEWARNING | FOF_NOERRORUI;
+    op.lpszProgressTitle = L"Moving dumps to the Recycle Bin";
+    return SHFileOperationW(&op) == 0 && !op.fAnyOperationsAborted;
+}
+
 void ShowInExplorer(const fs::path& path) {
     if (PIDLIST_ABSOLUTE pidl = ILCreateFromPathW(path.c_str())) {
         SHOpenFolderAndSelectItems(pidl, 0, nullptr, 0);
