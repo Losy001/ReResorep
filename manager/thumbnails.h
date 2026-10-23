@@ -27,8 +27,10 @@ public:
     ~ThumbnailCache();
 
     // Returns the SRV if ready (nullptr while loading or on error) and starts loading on first call.
+    // `version` is the file's modification time: a changed file gets a fresh preview.
     // `maxSize` 0 means full resolution (used for the detail preview).
-    ID3D11ShaderResourceView* Get(const std::filesystem::path& path, uint32_t maxSize, const TextureInfo** info);
+    ID3D11ShaderResourceView* Get(const std::filesystem::path& path, int64_t version, uint32_t maxSize,
+                                  const TextureInfo** info);
 
     // Drops entries not used for a while; call once per frame.
     void EndFrame();
@@ -48,7 +50,7 @@ private:
     };
 
     void Worker();
-    static std::wstring Key(const std::filesystem::path& path, uint32_t maxSize);
+    static std::wstring Key(const std::filesystem::path& path, int64_t version, uint32_t maxSize);
 
     Microsoft::WRL::ComPtr<ID3D11Device> device_;
     std::mutex mutex_;

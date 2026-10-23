@@ -192,7 +192,7 @@ void App::ComputeSimilar() {
         } else {
             score = 0.8f * detail + 0.2f * sizeScore;
         }
-        if (score > 0.05f) s.results.push_back({f.path, isMod, f.hash, score, t->kind, f.width, f.height});
+        if (score > 0.05f) s.results.push_back({f.path, isMod, f.hash, score, t->kind, f.width, f.height, f.modified});
     };
     for (const auto& f : library_.dumps()) consider(f, false);
     for (const auto& f : library_.mods()) consider(f, true);
@@ -974,7 +974,7 @@ void App::DrawCard(const TextureFile& file, bool isMod, float size) {
     dl->AddRectFilled(pos, ImVec2(pos.x + size, pos.y + size), IM_COL32(28, 28, 32, 255), 4.0f);
 
     const TextureInfo* info = nullptr;
-    ID3D11ShaderResourceView* srv = thumbs_.Get(file.path, uint32_t(size), &info);
+    ID3D11ShaderResourceView* srv = thumbs_.Get(file.path, file.modified, uint32_t(size), &info);
     if (srv && info) {
         DrawPreview(dl, srv, info->width, info->height, ImVec2(pos.x + 4, pos.y + 4), ImVec2(size - 8, size - 8),
                     (isMod && !file.enabled) ? IM_COL32(255, 255, 255, 70) : IM_COL32_WHITE);
@@ -1034,10 +1034,13 @@ void App::DrawCard(const TextureFile& file, bool isMod, float size) {
         if (isMod) {
             if (ImGui::MenuItem(file.selfDisabled ? "Turn on" : "Turn off")) Defer([this, file] { ToggleEnabled(file); });
             DrawMoveMenu(file);
+            const bool encrypted = info && info->encrypted;
+            if (ImGui::MenuItem("Open in editor", nullptr, false, !encrypted)) OpenWithShell(file.path);
+            if (encrypted) ImGui::SetItemTooltip("Encrypted (resorep1) textures can't be opened by image editors.");
         } else {
             if (ImGui::MenuItem("Replace with .dds...")) Defer([this, hash = file.hash] { ReplaceDump(hash); });
             DrawAddToModMenu(file);
-            if (ImGui::MenuItem("Open in default editor")) OpenWithShell(file.path);
+            if (ImGui::MenuItem("Open in editor")) OpenWithShell(file.path);
         }
         if (ImGui::MenuItem("Show in Explorer")) ShowInExplorer(file.path);
         ImGui::Separator();
@@ -1073,7 +1076,7 @@ void App::DrawDetails() {
     const float box = std::min(width, ImGui::GetWindowHeight() * 0.5f);
     PreviewTweak& tweak = previewTweaks_[file->hash];
     const TextureInfo* info = nullptr;
-    ID3D11ShaderResourceView* srv = thumbs_.Get(file->path, 0, &info);
+    ID3D11ShaderResourceView* srv = thumbs_.Get(file->path, file->modified, 0, &info);
     if (srv && info) {
         const ImVec2 fit = PreviewSize(info->width, info->height, box, tweak.quarterTurns);
         const ImVec2 at(ImGui::GetCursorScreenPos().x + (width - fit.x) * 0.5f, ImGui::GetCursorScreenPos().y);
@@ -1118,6 +1121,13 @@ void App::DrawDetails() {
         if (ImGui::Button(file->selfDisabled ? "Turn on" : "Turn off", ImVec2(width * 0.5f - 4, 0)))
             Defer([this, copy = *file] { ToggleEnabled(copy); });
         ImGui::SameLine();
+        const bool encrypted = info && info->encrypted;
+        ImGui::BeginDisabled(encrypted);
+        if (ImGui::Button("Open in editor", ImVec2(-1, 0))) OpenWithShell(file->path);
+        ImGui::EndDisabled();
+        ImGui::SetItemTooltip(encrypted ? "Encrypted (resorep1) textures can't be opened by image editors."
+                                        : "Opens the .dds in your default editor. Save it there; the preview and a "
+                                          "running game pick up the change.");
         if (ImGui::Button("Show in Explorer", ImVec2(-1, 0))) ShowInExplorer(file->path);
         if (!file->selfDisabled && !file->enabled)
             ImGui::TextColored(kErrorColor, "Off because its mod or category is turned off.");
@@ -1142,7 +1152,7 @@ void App::DrawDetails() {
             if (!active || m.path != *active) continue;
             ImGui::SeparatorText("Replaced by");
             const TextureInfo* modInfo = nullptr;
-            if (ID3D11ShaderResourceView* modSrv = thumbs_.Get(m.path, 256, &modInfo); modSrv && modInfo) {
+            if (ID3D11ShaderResourceView* modSrv = thumbs_.Get(m.path, m.modified, 256, &modInfo); modSrv && modInfo) {
                 const ImVec2 fit = PreviewSize(modInfo->width, modInfo->height, std::min(width, 256.0f));
                 const ImVec2 at = ImGui::GetCursorScreenPos();
                 ImGui::Dummy(fit);
@@ -1198,7 +1208,7 @@ void App::DrawSimilarWindow() {
 
     // Source header
     const TextureInfo* info = nullptr;
-    if (ID3D11ShaderResourceView* srv = thumbs_.Get(src.path, 96, &info); srv && info) {
+    if (ID3D11ShaderResourceView* srv = thumbs_.Get(src.path, src.modified, 96, &info); srv && info) {
         const ImVec2 at = ImGui::GetCursorScreenPos();
         ImGui::Dummy(ImVec2(96, 96));
         DrawPreview(ImGui::GetWindowDrawList(), srv, info->width, info->height, at, ImVec2(96, 96), IM_COL32_WHITE);
@@ -1237,7 +1247,7 @@ void App::DrawSimilarWindow() {
         const ImVec2 at = ImGui::GetCursorScreenPos();
         ImGui::Dummy(ImVec2(72, 72));
         const TextureInfo* ri = nullptr;
-        if (ID3D11ShaderResourceView* srv = thumbs_.Get(r.path, 72, &ri); srv && ri)
+        if (ID3D11ShaderResourceView* srv = thumbs_.Get(r.path, r.modified, 72, &ri); srv && ri)
             DrawPreview(ImGui::GetWindowDrawList(), srv, ri->width, ri->height, at, ImVec2(72, 72), IM_COL32_WHITE);
         ImGui::SameLine();
         ImGui::BeginGroup();

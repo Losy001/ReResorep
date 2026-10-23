@@ -82,6 +82,7 @@ private:
         float score;
         TextureKind kind;
         uint32_t width, height;
+        int64_t modified;
     };
     struct SimilarSearch {
         TextureFile source;

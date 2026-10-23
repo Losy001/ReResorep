@@ -23,13 +23,13 @@ ThumbnailCache::~ThumbnailCache() {
     worker_.join();
 }
 
-std::wstring ThumbnailCache::Key(const std::filesystem::path& path, uint32_t maxSize) {
-    return path.wstring() + L"|" + std::to_wstring(maxSize);
+std::wstring ThumbnailCache::Key(const std::filesystem::path& path, int64_t version, uint32_t maxSize) {
+    return path.wstring() + L"|" + std::to_wstring(maxSize) + L"|" + std::to_wstring(version);
 }
 
-ID3D11ShaderResourceView* ThumbnailCache::Get(const std::filesystem::path& path, uint32_t maxSize,
+ID3D11ShaderResourceView* ThumbnailCache::Get(const std::filesystem::path& path, int64_t version, uint32_t maxSize,
                                               const TextureInfo** info) {
-    const std::wstring key = Key(path, maxSize);
+    const std::wstring key = Key(path, version, maxSize);
     std::lock_guard lock(mutex_);
     auto [it, inserted] = entries_.try_emplace(key);
     it->second.lastUsed = frame_;
