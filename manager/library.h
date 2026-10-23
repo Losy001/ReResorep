@@ -60,7 +60,10 @@ public:
     std::string SetEnabled(const TextureFile& mod, bool enabled);
     std::string SetFolderEnabled(const std::wstring& rel, bool enabled);
     std::string CreateFolder(const std::wstring& parentRel, const std::string& name);
+    // Renames the mod/category `rel` in place; what was turned off inside it stays off.
+    std::string RenameFolder(const std::wstring& rel, const std::string& name);
     std::string MoveTo(const TextureFile& mod, const std::wstring& relDir);
+    std::string CopyTo(const TextureFile& mod, const std::wstring& relDir);  // same file name, turned on
     std::string Delete(const TextureFile& file);
     std::string DeleteFolder(const std::wstring& rel);
     std::string Import(const std::filesystem::path& source, uint32_t hash, const std::string& label, bool overwrite,

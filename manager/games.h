@@ -20,6 +20,7 @@ struct ManagerSettings {
     bool sortDescending = false;
     int previewRotation = 180;  // degrees clockwise: 0, 90, 180, 270
     bool previewMirror = false;
+    bool sharpZoom = true;  // zoomed-in preview shows hard-edged texels instead of blending them
     uint32_t accentColor = 0x4296FA;  // 0xRRGGBB
     bool hideNormals = false;
     bool hideGrayscale = false;

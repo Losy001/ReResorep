@@ -1,6 +1,7 @@
 #include "app.h"
 
 #include <imgui.h>
+#include <imgui_impl_dx11.h>
 
 #include <algorithm>
 #include <cmath>
@@ -89,9 +90,22 @@ void HelpMarker(const char* text) {
         ImGui::EndTooltip();
     }
 }
+// Draw-list callback: images after it sample with the sampler in UserCallbackData,
+// until an ImDrawCallback_ResetRenderState puts the backend's own back.
+void UseSampler(const ImDrawList*, const ImDrawCmd* cmd) {
+    auto* state = static_cast<ImGui_ImplDX11_RenderState*>(ImGui::GetPlatformIO().Renderer_RenderState);
+    ID3D11SamplerState* sampler = static_cast<ID3D11SamplerState*>(cmd->UserCallbackData);
+    state->DeviceContext->PSSetSamplers(0, 1, &sampler);
+}
 }  // namespace
 
 App::App(HWND hwnd, ID3D11Device* device) : hwnd_(hwnd), thumbs_(device) {
+    D3D11_SAMPLER_DESC sd = {};
+    sd.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT;
+    sd.AddressU = sd.AddressV = sd.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+    sd.ComparisonFunc = D3D11_COMPARISON_ALWAYS;
+    sd.MaxLOD = D3D11_FLOAT32_MAX;
+    device->CreateSamplerState(&sd, &pointSampler_);  // on failure the zoom just stays smooth
     settings_.Load();
     ApplyAccentColor(settings_.accentColor);
     labels_.Load(LabelsFile());
@@ -117,8 +131,27 @@ bool App::MatchesFilter(const TextureFile& f) const {
     if (std::to_string(f.hash).find(filter_) != std::string::npos) return true;
     const std::string needle = Lower(filter_);
     if (Lower(f.label).find(needle) != std::string::npos) return true;
+    // A mod's textures are found by the mod/category name too.
+    if (!f.relDir.empty() && Lower(WideToUtf8(f.relDir)).find(needle) != std::string::npos) return true;
     const std::string* user = labels_.Get(f.hash);
     return user && Lower(*user).find(needle) != std::string::npos;
+}
+
+size_t App::CountMatches(const std::vector<TextureFile>& files) const {
+    return size_t(std::count_if(files.begin(), files.end(), [this](const TextureFile& f) { return MatchesFilter(f); }));
+}
+
+void App::DrawSearch(float y) {
+    constexpr float kWidth = 280.0f;
+    ImGui::SetCursorPos(ImVec2(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - kWidth, y));
+    if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_F)) ImGui::SetKeyboardFocusHere();
+    ImGui::SetNextItemWidth(kWidth);
+    const bool edited = ImGui::InputTextWithHint("##search", "Search mods and dumps (name or hash)", filter_,
+                                                 sizeof(filter_), ImGuiInputTextFlags_EscapeClearsAll);
+    ImGui::SetItemTooltip("Matches hashes, file names, labels and mod/category names.\nCtrl+F to search, Esc to clear.");
+    // Typing on another tab jumps to where the results are.
+    if (edited && filter_[0] && tab_ != Tab::Mods && tab_ != Tab::Dumps)
+        selectTab_ = CountMatches(library_.mods()) || !CountMatches(library_.dumps()) ? Tab::Mods : Tab::Dumps;
 }
 
 void App::SetLabel(uint32_t hash, const std::string& label) {
@@ -418,17 +451,24 @@ void App::Frame() {
                      ImGuiWindowFlags_NoBringToFrontOnFocus);
 
     const float statusHeight = ImGui::GetFrameHeightWithSpacing();
+    const ImVec2 tabsPos = ImGui::GetCursorPos();
     if (ImGui::BeginTabBar("tabs")) {
+        const std::optional<Tab> select = std::exchange(selectTab_, std::nullopt);
         auto tab = [&](const char* name, Tab t) {
-            if (ImGui::BeginTabItem(name)) {
+            if (ImGui::BeginTabItem(name, nullptr, select == t ? ImGuiTabItemFlags_SetSelected : 0)) {
                 if (tab_ != t) selection_.reset();
                 tab_ = t;
                 ImGui::EndTabItem();
             }
         };
-        char modsLabel[48], dumpsLabel[48];
-        snprintf(modsLabel, sizeof(modsLabel), "Mods (%zu)###mods", library_.mods().size());
-        snprintf(dumpsLabel, sizeof(dumpsLabel), "Dumps (%zu)###dumps", library_.dumps().size());
+        // While searching, the counts are the matches, so both tabs show where the results are.
+        auto label = [&](char (&out)[64], const char* name, const char* id, const std::vector<TextureFile>& files) {
+            if (filter_[0]) snprintf(out, sizeof(out), "%s (%zu of %zu)###%s", name, CountMatches(files), files.size(), id);
+            else snprintf(out, sizeof(out), "%s (%zu)###%s", name, files.size(), id);
+        };
+        char modsLabel[64], dumpsLabel[64];
+        label(modsLabel, "Mods", "mods", library_.mods());
+        label(dumpsLabel, "Dumps", "dumps", library_.dumps());
         tab(modsLabel, Tab::Mods);
         tab(dumpsLabel, Tab::Dumps);
         tab("Games", Tab::Games);
@@ -436,6 +476,9 @@ void App::Frame() {
         tab("About", Tab::About);
         ImGui::EndTabBar();
     }
+    const ImVec2 afterTabs = ImGui::GetCursorPos();
+    DrawSearch(tabsPos.y);
+    ImGui::SetCursorPos(afterTabs);
 
     ImGui::BeginChild("content", ImVec2(0, -statusHeight));
     switch (tab_) {
@@ -514,9 +557,6 @@ void App::DrawToolbarMods() {
     if (ImGui::Button("Open folder")) OpenWithShell(library_.moddedFolder());
     ImGui::SameLine();
     ImGui::Checkbox("Show turned off", &showDisabled_);
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(160);
-    ImGui::InputTextWithHint("##filter", "Filter hash / name", filter_, sizeof(filter_));
     DrawViewOptions(true);
 }
 
@@ -586,6 +626,11 @@ void App::DrawFolderNode(size_t& index) {
         const std::wstring rel = f.rel;
         if (ImGui::MenuItem(f.selfDisabled ? "Turn on" : "Turn off"))
             Defer([this, rel, on = f.selfDisabled] { Status(library_.SetFolderEnabled(rel, on), "Updated"); });
+        if (ImGui::MenuItem("Rename...")) {
+            renameFolder_ = rel;
+            snprintf(renameName_, sizeof(renameName_), "%s", f.name.c_str());
+            openRenameFolderPopup_ = true;
+        }
         if (ImGui::MenuItem("New category inside...")) {
             newFolderParent_ = rel;
             newFolderName_[0] = 0;
@@ -618,13 +663,21 @@ void App::DrawFolderNode(size_t& index) {
     }
 }
 
-void App::DrawMoveMenu(const TextureFile& file) {
-    if (!ImGui::BeginMenu("Move to")) return;
+void App::DrawMoveMenu(const TextureFile& file, bool copy) {
+    if (!ImGui::BeginMenu(copy ? "Copy to" : "Move to")) return;
     auto item = [&](const char* label, const std::wstring& rel, int depth) {
         ImGui::Indent(float(depth) * 10.0f);
-        const bool current = DisabledSet::Key(rel) == DisabledSet::Key(file.relDir);
-        if (ImGui::MenuItem(label, nullptr, current, !current))
-            Defer([this, file, rel] { Status(library_.MoveTo(file, rel), "Moved"); });
+        // Ticked and greyed where the texture already is (copying: any file of the same name).
+        const bool there = copy ? fs::exists(library_.moddedFolder() / rel / file.path.filename())
+                                : DisabledSet::Key(rel) == DisabledSet::Key(file.relDir);
+        if (ImGui::MenuItem(label, nullptr, there, !there)) {
+            if (copy) {
+                const std::string where = rel.empty() ? "loose textures" : "\"" + WideToUtf8(rel) + "\"";
+                Defer([this, file, rel, where] { Status(library_.CopyTo(file, rel), "Copied to " + where); });
+            } else {
+                Defer([this, file, rel] { Status(library_.MoveTo(file, rel), "Moved"); });
+            }
+        }
         ImGui::Unindent(float(depth) * 10.0f);
     };
     item("(loose, no mod)", L"", 0);
@@ -649,6 +702,11 @@ void App::AddDumpToMod(const TextureFile& dump, const std::wstring& rel) {
 
 void App::DrawAddToModMenu(const TextureFile& dump) {
     if (!ImGui::BeginMenu("Add to mod")) return;
+    DrawAddToModItems(dump);
+    ImGui::EndMenu();
+}
+
+void App::DrawAddToModItems(const TextureFile& dump) {
     // A copy of the dump goes into the mod as <hash>.dds, ready to be edited.
     auto item = [&](const char* label, const std::wstring& rel, int depth) {
         ImGui::Indent(float(depth) * 10.0f);
@@ -670,7 +728,6 @@ void App::DrawAddToModMenu(const TextureFile& dump) {
         newFolderName_[0] = 0;
         openNewFolderPopup_ = true;
     }
-    ImGui::EndMenu();
 }
 
 void App::DrawFolderPopups() {
@@ -712,6 +769,46 @@ void App::DrawFolderPopups() {
         ImGui::EndPopup();
     }
 
+    if (openRenameFolderPopup_) {
+        ImGui::OpenPopup("Rename folder");
+        openRenameFolderPopup_ = false;
+    }
+    if (ImGui::BeginPopupModal("Rename folder", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        const bool isMod = renameFolder_.find(L'/') == std::wstring::npos;
+        ImGui::Text("New name for the %s \"%s\":", isMod ? "mod" : "category", WideToUtf8(renameFolder_).c_str());
+        if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+        ImGui::SetNextItemWidth(300);
+        const bool enter = ImGui::InputText("##name", renameName_, sizeof(renameName_),
+                                            ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
+        if (ImGui::Button("Rename", ImVec2(120, 0)) || enter) {
+            const std::wstring from = renameFolder_;
+            const std::string name = renameName_;
+            Defer([this, from, name] {
+                const std::string e = library_.RenameFolder(from, name);
+                Status(e, "Renamed to " + name);
+                if (!e.empty()) return;
+                // Keep the sidebar and the selected texture pointing at the same things.
+                const size_t slash = from.rfind(L'/');
+                const std::wstring to =
+                    (slash == std::wstring::npos ? L"" : from.substr(0, slash + 1)) + SafeFolderName(name);
+                const std::wstring fromKey = DisabledSet::Key(from);
+                const std::wstring viewKey = DisabledSet::Key(viewFolder_);
+                if (viewKey == fromKey || viewKey.starts_with(fromKey + L"/"))
+                    viewFolder_ = to + viewFolder_.substr(from.size());
+                if (selection_ && selection_->isMod) {
+                    const fs::path rel = selection_->path.lexically_relative(library_.moddedFolder());
+                    const std::wstring relSlashed = DisabledSet::Slashed(rel);
+                    if (DisabledSet::Key(rel).starts_with(fromKey + L"/"))
+                        selection_->path = library_.moddedFolder() / (to + relSlashed.substr(from.size()));
+                }
+            });
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(120, 0))) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
+
     if (openDeleteFolderPopup_) {
         ImGui::OpenPopup("Delete folder");
         openDeleteFolderPopup_ = false;
@@ -739,9 +836,6 @@ void App::DrawToolbarDumps() {
     if (ImGui::Button("Open folder")) OpenWithShell(library_.originalFolder());
     ImGui::SameLine();
     ImGui::Checkbox("Hide already modded", &hideModdedDumps_);
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(160);
-    ImGui::InputTextWithHint("##filter", "Filter hash", filter_, sizeof(filter_));
     if (!settings_.modCreatorMode || !settings_.saveTextures) {
         ImGui::SameLine();
         ImGui::TextColored(kDimColor, "Dumping is off - enable it in Settings.");
@@ -934,6 +1028,18 @@ void App::DrawGrid(const std::vector<TextureFile>& files, bool isMod) {
         if (MatchesFilter(f)) visible.push_back(&f);
     }
     SortVisible(visible, isMod);
+    if (visible.empty() && filter_[0]) {
+        ImGui::TextColored(kDimColor, "Nothing here matches \"%s\".", filter_);
+        const size_t other = CountMatches(isMod ? library_.dumps() : library_.mods());
+        if (other) {
+            ImGui::TextColored(kDimColor, "%zu match(es) in %s.", other, isMod ? "Dumps" : "Mods");
+            ImGui::SameLine();
+            if (ImGui::SmallButton(isMod ? "Show dumps" : "Show mods")) selectTab_ = isMod ? Tab::Dumps : Tab::Mods;
+        }
+        if (isMod && modView_ != ModView::All)
+            ImGui::TextColored(kDimColor, "Only the part selected on the left is searched; pick All textures to search every mod.");
+        return;
+    }
     if (visible.empty()) {
         ImGui::TextColored(kDimColor, isMod ? "No textures here yet. Import .dds files or drop them here."
                                             : "No dumped textures. Turn on dumping in Settings and play the game.");
@@ -1033,7 +1139,8 @@ void App::DrawCard(const TextureFile& file, bool isMod, float size) {
         selection_ = Selection{file.path, isMod};
         if (isMod) {
             if (ImGui::MenuItem(file.selfDisabled ? "Turn on" : "Turn off")) Defer([this, file] { ToggleEnabled(file); });
-            DrawMoveMenu(file);
+            DrawMoveMenu(file, false);
+            DrawMoveMenu(file, true);
             const bool encrypted = info && info->encrypted;
             if (ImGui::MenuItem("Open in editor", nullptr, false, !encrypted)) OpenWithShell(file.path);
             if (encrypted) ImGui::SetItemTooltip("Encrypted (resorep1) textures can't be opened by image editors.");
@@ -1080,26 +1187,95 @@ void App::DrawDetails() {
     if (srv && info) {
         const ImVec2 fit = PreviewSize(info->width, info->height, box, tweak.quarterTurns);
         const ImVec2 at(ImGui::GetCursorScreenPos().x + (width - fit.x) * 0.5f, ImGui::GetCursorScreenPos().y);
-        ImGui::Dummy(ImVec2(width, fit.y));
-        DrawPreview(ImGui::GetWindowDrawList(), srv, info->width, info->height, at, fit, IM_COL32_WHITE,
+        const ImVec2 rowStart = ImGui::GetCursorScreenPos();
+        ImGui::SetCursorScreenPos(at);
+        ImGui::InvisibleButton("##preview", fit, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonMiddle);
+        ImGui::SetItemKeyOwner(ImGuiKey_MouseWheelY);  // the wheel zooms here instead of scrolling the panel
+        ImGui::SetCursorScreenPos(ImVec2(rowStart.x, ImGui::GetCursorScreenPos().y));
+
+        // Zoom: wheel steps of 25% around the cursor, up to 16 screen pixels per texel.
+        const int turns = (settings_.previewRotation / 90 + tweak.quarterTurns) & 3;
+        const float texelsAcross = float(turns % 2 ? info->height : info->width);
+        const float maxZoom = std::max(1.0f, 16.0f * texelsAcross / fit.x);
+        const ImGuiIO& io = ImGui::GetIO();
+        auto clampPan = [&] {
+            tweak.pan.x = std::clamp(tweak.pan.x, 1.0f - tweak.zoom, 0.0f);
+            tweak.pan.y = std::clamp(tweak.pan.y, 1.0f - tweak.zoom, 0.0f);
+        };
+        if (ImGui::IsItemHovered() && io.MouseWheel != 0.0f) {
+            const float zoom = std::clamp(tweak.zoom * std::pow(1.25f, io.MouseWheel), 1.0f, maxZoom);
+            // Keep the texel under the cursor where it is.
+            const ImVec2 m((io.MousePos.x - at.x) / fit.x, (io.MousePos.y - at.y) / fit.y);
+            tweak.pan.x = m.x - (m.x - tweak.pan.x) * zoom / tweak.zoom;
+            tweak.pan.y = m.y - (m.y - tweak.pan.y) * zoom / tweak.zoom;
+            tweak.zoom = zoom;
+            clampPan();
+        }
+        if (ImGui::IsItemActive() && (io.MouseDelta.x != 0.0f || io.MouseDelta.y != 0.0f)) {
+            tweak.pan.x += io.MouseDelta.x / fit.x;
+            tweak.pan.y += io.MouseDelta.y / fit.y;
+            clampPan();
+        }
+        if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+            tweak.zoom = 1.0f;
+            tweak.pan = ImVec2();
+        }
+        if (tweak.zoom > 1.0f) {
+            ImGui::SetMouseCursor(ImGui::IsItemActive() ? ImGuiMouseCursor_ResizeAll : ImGuiMouseCursor_Hand);
+        }
+        ImGui::SetItemTooltip("Scroll to zoom, drag to move around, double-click to fit.");
+
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        dl->PushClipRect(at, ImVec2(at.x + fit.x, at.y + fit.y), true);
+        const ImVec2 zoomed(fit.x * tweak.zoom, fit.y * tweak.zoom);
+        // Past 100% each texel covers several screen pixels; point sampling keeps their edges hard.
+        const bool sharp = settings_.sharpZoom && pointSampler_ && zoomed.x > texelsAcross;
+        if (sharp) dl->AddCallback(UseSampler, pointSampler_.Get());
+        DrawPreview(dl, srv, info->width, info->height,
+                    ImVec2(at.x + tweak.pan.x * fit.x, at.y + tweak.pan.y * fit.y), zoomed, IM_COL32_WHITE,
                     tweak.quarterTurns, tweak.mirror);
+        if (sharp) dl->AddCallback(ImDrawCallback_ResetRenderState, nullptr);
+        if (tweak.zoom > 1.0f) {
+            // Size on screen relative to the texture's own pixels.
+            char text[32];
+            snprintf(text, sizeof(text), "%.0f%%", 100.0f * zoomed.x / std::max(1.0f, texelsAcross));
+            const ImVec2 size = ImGui::CalcTextSize(text);
+            const ImVec2 p(at.x + fit.x - size.x - 8, at.y + 4);
+            dl->AddRectFilled(ImVec2(p.x - 4, p.y - 2), ImVec2(p.x + size.x + 4, p.y + size.y + 2), IM_COL32(0, 0, 0, 170), 4.0f);
+            dl->AddText(p, IM_COL32_WHITE, text);
+        }
+        dl->PopClipRect();
     } else {
         ImGui::Dummy(ImVec2(width, box));
     }
 
     // This preview's own orientation, on top of the grid's Rotate/Mirror setting.
+    // Turning the picture would leave a zoomed view looking somewhere else, so it goes back to fit.
     const float buttonW = (width - ImGui::GetStyle().ItemSpacing.x * 3) / 4;
-    if (ImGui::Button("Rotate left", ImVec2(buttonW, 0))) tweak.quarterTurns = (tweak.quarterTurns + 3) & 3;
+    auto unzoom = [&] {
+        tweak.zoom = 1.0f;
+        tweak.pan = ImVec2();
+    };
+    if (ImGui::Button("Rotate left", ImVec2(buttonW, 0))) {
+        tweak.quarterTurns = (tweak.quarterTurns + 3) & 3;
+        unzoom();
+    }
     ImGui::SameLine();
-    if (ImGui::Button("Rotate right", ImVec2(buttonW, 0))) tweak.quarterTurns = (tweak.quarterTurns + 1) & 3;
+    if (ImGui::Button("Rotate right", ImVec2(buttonW, 0))) {
+        tweak.quarterTurns = (tweak.quarterTurns + 1) & 3;
+        unzoom();
+    }
     ImGui::SameLine();
-    if (ImGui::Button(tweak.mirror ? "Unmirror" : "Mirror", ImVec2(buttonW, 0))) tweak.mirror = !tweak.mirror;
+    if (ImGui::Button(tweak.mirror ? "Unmirror" : "Mirror", ImVec2(buttonW, 0))) {
+        tweak.mirror = !tweak.mirror;
+        unzoom();
+    }
     ImGui::SameLine();
-    ImGui::BeginDisabled(tweak.quarterTurns == 0 && !tweak.mirror);
+    ImGui::BeginDisabled(tweak.quarterTurns == 0 && !tweak.mirror && tweak.zoom == 1.0f);
     if (ImGui::Button("Reset", ImVec2(buttonW, 0))) tweak = {};
     ImGui::EndDisabled();
     ImGui::SetItemTooltip("These buttons turn only this preview (remembered per texture while the app is open).\n"
-                          "The Rotate / Mirror options above apply to every preview.");
+                          "The Rotate / Mirror options above apply to every preview. Reset also undoes zoom.");
 
     ImGui::SeparatorText(isMod ? "Mod" : "Original texture");
     ImGui::Text("Hash: %u", file->hash);
@@ -1140,8 +1316,15 @@ void App::DrawDetails() {
             ImGui::TextColored(kDimColor, "Turn the others off to choose which one wins.");
         }
     } else {
-        if (ImGui::Button("Replace with .dds...", ImVec2(-1, 0)))
+        if (ImGui::Button("Replace with .dds...", ImVec2(width * 0.5f - 4, 0)))
             Defer([this, hash = file->hash] { ReplaceDump(hash); });
+        ImGui::SameLine();
+        if (ImGui::Button("Add to mod...", ImVec2(-1, 0))) ImGui::OpenPopup("addtomod");
+        ImGui::SetItemTooltip("Copies this texture into a mod as <hash>.dds, ready to edit.");
+        if (ImGui::BeginPopup("addtomod")) {
+            DrawAddToModItems(*file);
+            ImGui::EndPopup();
+        }
         if (ImGui::Button("Open in editor", ImVec2(width * 0.5f - 4, 0))) OpenWithShell(file->path);
         ImGui::SameLine();
         if (ImGui::Button("Show in Explorer", ImVec2(-1, 0))) ShowInExplorer(file->path);
@@ -1487,6 +1670,18 @@ void App::DrawSettings() {
         if (ImGui::Button("Reset")) set(kDefaultAccent, true);
         ImGui::EndDisabled();
     }
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("Zoomed-in preview");
+    ImGui::SameLine();
+    bool zoomChanged = ImGui::RadioButton("Sharp pixels", settings_.sharpZoom) && !settings_.sharpZoom;
+    ImGui::SameLine();
+    zoomChanged |= ImGui::RadioButton("Smooth", !settings_.sharpZoom) && settings_.sharpZoom;
+    if (zoomChanged) {
+        settings_.sharpZoom = !settings_.sharpZoom;
+        settings_.Save();
+    }
+    HelpMarker("How the details preview looks past 100% zoom. Sharp shows every texel as a hard-edged "
+               "square, which is easiest for checking pixel-level edits. Smooth blends neighbouring texels.");
 
     ImGui::SeparatorText("Labels");
     ImGui::Text("%zu label(s) in %s", labels_.size(), ToUtf8(LabelsFile()).c_str());

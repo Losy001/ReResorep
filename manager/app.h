@@ -1,6 +1,7 @@
 #pragma once
 #include <windows.h>
 #include <d3d11.h>
+#include <wrl/client.h>
 
 #include <atomic>
 #include <chrono>
@@ -48,8 +49,9 @@ private:
     void DrawSidebar();
     void DrawFolderNode(size_t& index);
     void DrawFolderPopups();
-    void DrawMoveMenu(const TextureFile& file);
+    void DrawMoveMenu(const TextureFile& file, bool copy);  // "Move to" or "Copy to"
     void DrawAddToModMenu(const TextureFile& dump);
+    void DrawAddToModItems(const TextureFile& dump);  // the menu's entries, also used by the details button
     void AddDumpToMod(const TextureFile& dump, const std::wstring& rel);
     bool InView(const TextureFile& file) const;
     std::wstring ImportDir() const { return modView_ == ModView::Folder ? viewFolder_ : std::wstring(); }
@@ -94,6 +96,8 @@ private:
     };
     const std::string& DisplayLabel(const TextureFile& file) const;
     bool MatchesFilter(const TextureFile& file) const;
+    size_t CountMatches(const std::vector<TextureFile>& files) const;
+    void DrawSearch(float y);
     TextureKind KindOf(const TextureFile& file) { return analyzer_->Kind(file.path, file.modified, file.size); }
     void SetLabel(uint32_t hash, const std::string& label);
     void ImportLabels();
@@ -142,8 +146,11 @@ private:
     struct PreviewTweak {
         int quarterTurns = 0;  // clockwise
         bool mirror = false;
+        float zoom = 1.0f;  // 1 = whole texture fits the preview
+        ImVec2 pan;         // top-left of the zoomed picture relative to the preview, in preview sizes (<= 0)
     };
     std::unordered_map<uint32_t, PreviewTweak> previewTweaks_;  // per hash, this session only
+    Microsoft::WRL::ComPtr<ID3D11SamplerState> pointSampler_;   // for the sharp zoomed preview
     std::optional<ExportDialog> exportDialog_;
     std::optional<ImportModDialog> importModDialog_;
     bool openExportPopup_ = false;
@@ -161,7 +168,8 @@ private:
 
     Tab tab_ = Tab::Mods;
     std::optional<Selection> selection_;
-    char filter_[32] = {};
+    char filter_[64] = {};          // the search field in the tab row; applies to Mods and Dumps
+    std::optional<Tab> selectTab_;  // switch to this tab on the next frame
     bool showDisabled_ = true;
     bool hideModdedDumps_ = false;
     float thumbSize_ = 128.0f;
@@ -173,6 +181,9 @@ private:
     bool openNewFolderPopup_ = false;
     std::wstring deleteFolder_;
     bool openDeleteFolderPopup_ = false;
+    std::wstring renameFolder_;
+    char renameName_[64] = {};
+    bool openRenameFolderPopup_ = false;
     std::vector<PendingImport> pendingImports_;
     bool openImportPopup_ = false;
     std::vector<std::function<void()>> deferred_;

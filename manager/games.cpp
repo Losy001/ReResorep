@@ -55,6 +55,7 @@ void ManagerSettings::Load() {
     sortDescending = ini.GetBool("ui_sort_descending", false);
     previewRotation = ((std::atoi(ini.GetOr("ui_preview_rotation", "180").c_str()) / 90 % 4 + 4) % 4) * 90;
     previewMirror = ini.GetBool("ui_preview_mirror", false);
+    sharpZoom = ini.GetBool("ui_sharp_zoom", true);
     accentColor = ParseHexColor(ini.GetOr("ui_accent_color", ""), kDefaultAccent);
     hideNormals = ini.GetBool("ui_hide_normals", false);
     hideGrayscale = ini.GetBool("ui_hide_grayscale", false);
@@ -75,6 +76,7 @@ bool ManagerSettings::Save() const {
     ini.SetBool("ui_sort_descending", sortDescending);
     ini.Set("ui_preview_rotation", std::to_string(previewRotation));
     ini.SetBool("ui_preview_mirror", previewMirror);
+    ini.SetBool("ui_sharp_zoom", sharpZoom);
     ini.Set("ui_accent_color", HexColor(accentColor));
     ini.SetBool("ui_hide_normals", hideNormals);
     ini.SetBool("ui_hide_grayscale", hideGrayscale);
