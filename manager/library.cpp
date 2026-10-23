@@ -5,6 +5,7 @@
 #include <unordered_map>
 
 #include "dds.h"
+#include "mod_package.h"
 #include "settings.h"
 #include "texture_index.h"
 #include "win_util.h"
@@ -181,7 +182,7 @@ std::string Library::SetFolderEnabled(const std::wstring& rel, bool enabled) {
 }
 
 std::string Library::CreateFolder(const std::wstring& parentRel, const std::string& name) {
-    const std::wstring clean = SanitizeName(name);
+    const std::wstring clean = SafeFolderName(name);  // same rules as mod import
     if (clean.empty()) return "Enter a name.";
     const fs::path dir = modded_ / parentRel / clean;
     if (fs::exists(dir)) return "A folder with that name already exists.";

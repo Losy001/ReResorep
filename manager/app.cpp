@@ -636,13 +636,52 @@ void App::DrawMoveMenu(const TextureFile& file) {
     ImGui::EndMenu();
 }
 
+void App::AddDumpToMod(const TextureFile& dump, const std::wstring& rel) {
+    const std::string where = rel.empty() ? "loose textures" : "\"" + WideToUtf8(rel) + "\"";
+    if (fs::exists(library_.TargetPath(dump.hash, "", rel))) {
+        Status(where + " already has a texture for " + std::to_string(dump.hash), "");
+        return;
+    }
+    const std::string e = library_.Import(dump.path, dump.hash, "", false, rel);
+    Status(e, "Added " + std::to_string(dump.hash) + " to " + where +
+                  ". It looks the same in-game until you edit that copy.");
+}
+
+void App::DrawAddToModMenu(const TextureFile& dump) {
+    if (!ImGui::BeginMenu("Add to mod")) return;
+    // A copy of the dump goes into the mod as <hash>.dds, ready to be edited.
+    auto item = [&](const char* label, const std::wstring& rel, int depth) {
+        ImGui::Indent(float(depth) * 10.0f);
+        const bool already = fs::exists(library_.TargetPath(dump.hash, "", rel));
+        if (ImGui::MenuItem(label, nullptr, already, !already))
+            Defer([this, dump, rel] { AddDumpToMod(dump, rel); });
+        ImGui::Unindent(float(depth) * 10.0f);
+    };
+    for (const ModFolder& f : library_.folders()) {
+        ImGui::PushID(f.rel.c_str());
+        item(f.name.c_str(), f.rel, f.depth - 1);
+        ImGui::PopID();
+    }
+    if (!library_.folders().empty()) ImGui::Separator();
+    item("(loose, no mod)", L"", 0);
+    if (ImGui::MenuItem("New mod...")) {
+        addAfterCreate_ = dump;
+        newFolderParent_.clear();
+        newFolderName_[0] = 0;
+        openNewFolderPopup_ = true;
+    }
+    ImGui::EndMenu();
+}
+
 void App::DrawFolderPopups() {
     if (openNewFolderPopup_) {
         ImGui::OpenPopup("New folder");
         openNewFolderPopup_ = false;
     }
     if (ImGui::BeginPopupModal("New folder", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-        if (newFolderParent_.empty()) ImGui::TextUnformatted("Name of the new mod:");
+        if (newFolderParent_.empty())
+            ImGui::TextUnformatted(addAfterCreate_ ? "Name of the new mod (the texture is added to it):"
+                                                   : "Name of the new mod:");
         else ImGui::Text("New category inside %s:", WideToUtf8(newFolderParent_).c_str());
         if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
         ImGui::SetNextItemWidth(300);
@@ -651,18 +690,25 @@ void App::DrawFolderPopups() {
         if (ImGui::Button("Create", ImVec2(120, 0)) || enter) {
             const std::wstring parent = newFolderParent_;
             const std::string name = newFolderName_;
-            Defer([this, parent, name] {
+            std::optional<TextureFile> add = std::exchange(addAfterCreate_, std::nullopt);
+            Defer([this, parent, name, add] {
                 const std::string e = library_.CreateFolder(parent, name);
+                // Same cleanup of the name as the folder on disk got.
+                const std::wstring folder = SafeFolderName(name);
+                const std::wstring rel = parent.empty() ? folder : parent + L"/" + folder;
                 Status(e, "Created " + name);
-                if (e.empty()) {
-                    modView_ = ModView::Folder;
-                    viewFolder_ = parent.empty() ? Utf8ToWide(name) : parent + L"/" + Utf8ToWide(name);
-                }
+                if (!e.empty()) return;
+                modView_ = ModView::Folder;
+                viewFolder_ = rel;
+                if (add) AddDumpToMod(*add, rel);
             });
             ImGui::CloseCurrentPopup();
         }
         ImGui::SameLine();
-        if (ImGui::Button("Cancel", ImVec2(120, 0))) ImGui::CloseCurrentPopup();
+        if (ImGui::Button("Cancel", ImVec2(120, 0))) {
+            addAfterCreate_.reset();
+            ImGui::CloseCurrentPopup();
+        }
         ImGui::EndPopup();
     }
 
@@ -990,6 +1036,7 @@ void App::DrawCard(const TextureFile& file, bool isMod, float size) {
             DrawMoveMenu(file);
         } else {
             if (ImGui::MenuItem("Replace with .dds...")) Defer([this, hash = file.hash] { ReplaceDump(hash); });
+            DrawAddToModMenu(file);
             if (ImGui::MenuItem("Open in default editor")) OpenWithShell(file.path);
         }
         if (ImGui::MenuItem("Show in Explorer")) ShowInExplorer(file.path);

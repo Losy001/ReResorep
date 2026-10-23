@@ -49,6 +49,8 @@ private:
     void DrawFolderNode(size_t& index);
     void DrawFolderPopups();
     void DrawMoveMenu(const TextureFile& file);
+    void DrawAddToModMenu(const TextureFile& dump);
+    void AddDumpToMod(const TextureFile& dump, const std::wstring& rel);
     bool InView(const TextureFile& file) const;
     std::wstring ImportDir() const { return modView_ == ModView::Folder ? viewFolder_ : std::wstring(); }
     void DrawToolbarDumps();
@@ -165,6 +167,7 @@ private:
     ModView modView_ = ModView::All;
     std::wstring viewFolder_;
     std::wstring newFolderParent_;
+    std::optional<TextureFile> addAfterCreate_;  // dump to add once the "New mod" popup creates it
     char newFolderName_[64] = {};
     bool openNewFolderPopup_ = false;
     std::wstring deleteFolder_;
