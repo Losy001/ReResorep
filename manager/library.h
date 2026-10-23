@@ -78,13 +78,16 @@ private:
     void Watch();
     void CloseWatches();
     std::string SaveState();
+    void LoadInfoCache();
+    void SaveInfoCache();
 
     std::filesystem::path modded_, original_;
     DisabledSet disabled_;
     std::vector<TextureFile> mods_, dumps_;
     std::vector<ModFolder> folders_;
     std::unordered_map<uint32_t, std::filesystem::path> active_;
-    // Header info per file, reused while its size and timestamp are unchanged.
+    // Header info per file, reused while its size and timestamp are unchanged. Kept on disk
+    // (texture_info.cache) so a launch does not open every texture to read its header.
     struct CachedInfo {
         int64_t modified;
         uint64_t size;
@@ -92,6 +95,8 @@ private:
         DXGI_FORMAT format;
     };
     std::unordered_map<std::wstring, CachedInfo> infoCache_;
+    bool infoCacheLoaded_ = false;
+    size_t infoUnsaved_ = 0;  // headers read since the cache file was last written
     HANDLE watches_[2] = {INVALID_HANDLE_VALUE, INVALID_HANDLE_VALUE};
 };
 

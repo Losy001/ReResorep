@@ -54,6 +54,7 @@ Where things are kept (all inside this folder)
   reresorep.ini            settings and your game list
   labels.txt               your texture labels
   texture_analysis.cache   detected texture types (safe to delete)
+  texture_info.cache       texture sizes and formats, for a faster start (safe to delete)
 
 
 Files in this download

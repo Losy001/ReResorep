@@ -1,6 +1,8 @@
 #include "library.h"
 
 #include <algorithm>
+#include <cstring>
+#include <fstream>
 #include <system_error>
 #include <unordered_map>
 
@@ -15,6 +17,10 @@ namespace resorep::ui {
 namespace fs = std::filesystem;
 
 namespace {
+constexpr char kInfoCacheMagic[4] = {'R', 'R', 'T', '1'};  // bump when CachedInfo changes
+
+fs::path InfoCacheFile() { return ExeDirectory() / L"texture_info.cache"; }
+
 std::string ErrorText(const std::error_code& ec) { return ec ? ec.message() : std::string(); }
 
 // Folder and label names end up on disk; keep to characters Windows allows.
@@ -33,7 +39,67 @@ std::wstring TreeKey(const std::wstring& rel) {
 }
 }  // namespace
 
-Library::~Library() { CloseWatches(); }
+Library::~Library() {
+    CloseWatches();
+    if (infoUnsaved_) SaveInfoCache();
+}
+
+void Library::LoadInfoCache() {
+    std::ifstream in(InfoCacheFile(), std::ios::binary);
+    char magic[4];
+    if (!in.read(magic, 4) || std::memcmp(magic, kInfoCacheMagic, 4) != 0) return;
+    for (;;) {
+        uint16_t len = 0;
+        if (!in.read(reinterpret_cast<char*>(&len), 2)) break;
+        std::wstring path(len, L'\0');
+        CachedInfo c{};
+        uint32_t format = 0;
+        in.read(reinterpret_cast<char*>(path.data()), std::streamsize(len) * 2);
+        in.read(reinterpret_cast<char*>(&c.modified), 8);
+        in.read(reinterpret_cast<char*>(&c.size), 8);
+        in.read(reinterpret_cast<char*>(&c.width), 4);
+        in.read(reinterpret_cast<char*>(&c.height), 4);
+        in.read(reinterpret_cast<char*>(&format), 4);
+        if (!in) break;
+        c.format = DXGI_FORMAT(format);
+        infoCache_[path] = c;
+    }
+}
+
+void Library::SaveInfoCache() {
+    // Only files from the last scan, so entries for deleted textures drop out.
+    std::vector<char> out(kInfoCacheMagic, kInfoCacheMagic + 4);
+    auto put = [&](const void* p, size_t n) {
+        out.insert(out.end(), static_cast<const char*>(p), static_cast<const char*>(p) + n);
+    };
+    for (const auto* list : {&mods_, &dumps_}) {
+        for (const TextureFile& f : *list) {
+            const std::wstring path = f.path.wstring();
+            auto it = infoCache_.find(path);
+            if (it == infoCache_.end() || path.size() > 0xFFFF) continue;
+            const CachedInfo& c = it->second;
+            const uint16_t len = uint16_t(path.size());
+            const uint32_t format = uint32_t(c.format);
+            put(&len, 2);
+            put(path.data(), path.size() * 2);
+            put(&c.modified, 8);
+            put(&c.size, 8);
+            put(&c.width, 4);
+            put(&c.height, 4);
+            put(&format, 4);
+        }
+    }
+    infoUnsaved_ = 0;
+    const fs::path file = InfoCacheFile();
+    const fs::path tmp = file.wstring() + L".tmp";
+    {
+        std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
+        f.write(out.data(), std::streamsize(out.size()));
+        if (!f) return;
+    }
+    std::error_code ec;
+    fs::rename(tmp, file, ec);
+}
 
 TextureFile Library::MakeFile(const fs::directory_entry& e, uint32_t hash) {
     TextureFile f;
@@ -52,6 +118,7 @@ TextureFile Library::MakeFile(const fs::directory_entry& e, uint32_t hash) {
         DdsImage header;
         const bool ok = ReadTextureInfo(f.path.wstring(), header);
         c = {f.modified, f.size, ok ? header.width : 0, ok ? header.height : 0, ok ? header.format : DXGI_FORMAT_UNKNOWN};
+        ++infoUnsaved_;
     }
     f.width = c.width;
     f.height = c.height;
@@ -65,6 +132,10 @@ void Library::SetFolders(const fs::path& modded, const fs::path& original) {
     std::error_code ec;
     fs::create_directories(modded_, ec);
     fs::create_directories(original_, ec);
+    if (!infoCacheLoaded_) {
+        LoadInfoCache();
+        infoCacheLoaded_ = true;
+    }
     Watch();
     Refresh();
 }
@@ -137,6 +208,8 @@ void Library::Refresh() {
     };
     std::sort(mods_.begin(), mods_.end(), byHash);
     std::sort(dumps_.begin(), dumps_.end(), byHash);
+    // Written in batches: a running game dumps textures one at a time; the rest is saved on exit.
+    if (infoUnsaved_ >= 250) SaveInfoCache();
 
     // Per-folder counts, and which file wins per hash (same rule as the proxy's index).
     std::unordered_map<std::wstring, size_t> folderIndex;
