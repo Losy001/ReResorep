@@ -15,6 +15,13 @@ struct ManagerSettings {
     bool saveTextures = false;
     bool logEnabled = false;
     bool logDebug = false;
+    // Texture manager view options.
+    std::string sortKey = "hash";
+    bool sortDescending = false;
+    int previewRotation = 180;  // degrees clockwise: 0, 90, 180, 270
+    bool previewMirror = false;
+    bool hideNormals = false;
+    bool hideGrayscale = false;
     std::vector<std::filesystem::path> games;  // game executables
 
     static std::filesystem::path File();

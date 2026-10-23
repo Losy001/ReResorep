@@ -21,6 +21,25 @@ Existing Resorep texture packs keep working unchanged. That includes `<hash>.dds
 4. To find hashes, open **Settings** and turn on *Mod creator mode* and *Dump textures*, then play.
    The **Dumps** tab fills with the game's textures. Select one and choose *Replace with .dds…*.
 
+### Finding your way around big dump folders
+
+- **Sort** by hash, name, date modified, file size, resolution, format or mod/category, in
+  either direction.
+- **Rotate / Mirror** previews. The default is 180°, which matches how dumped textures look
+  in-game. This only changes the display; files are never altered.
+- **Labels:** give any hash your own name in the details panel. Labels are kept in
+  `labels.txt` next to `ReResorep.exe`, shared by the dump and every mod for that hash, and
+  included when searching. *Settings → Labels* imports and exports them. The format is
+  `hash=label` per line; CSV and tab-separated also work.
+- **Texture types:** each texture is classified in the background on its own GPU device, and
+  the result is cached in `texture_analysis.cache`. The types are *colour*, *normal map* and
+  *depth/grayscale*. The last covers masks, roughness, height and monochrome icons. *Hide
+  normal maps* and *Hide depth / grayscale* filter the grids.
+- **Find its normal map / Find similar textures** (right-click a texture). Candidates are
+  ranked by how well their detail lines up with the texture, whether they're the same size,
+  and, for dumps, how close together they were saved: games load a material's textures
+  together. Check the top results by eye.
+
 ### Mods and categories
 
 Group textures into folders inside the modded folder. A top-level folder is a **mod**, and any
@@ -40,6 +59,24 @@ for *New category*, *Import .dds here*, *Open folder* and *Move to Recycle Bin*.
 texture and use *Move to* to put it in a different category. Any texture, category or whole mod can
 be turned off. On/off choices are saved in `modded/reresorep_disabled.ini`, and files are never
 moved, so turning something back on restores it exactly.
+
+#### Sharing mods
+
+Right-click a mod, or a category, and choose **Export…** to save it as a `.zip`. The zip
+contains:
+
+- the mod folder with its categories (empty ones too),
+- which textures and categories are turned off (they stay off for whoever imports it),
+- your labels for the textures in it.
+
+Both of the last two are optional. Any zip tool can open the package.
+
+To install a package, use **Import mod…** in the sidebar, or drop the `.zip` onto the window.
+You can rename the mod first. If a mod with that name already exists, you're asked before
+merging into it. Zips from other tools work too: their `.dds` files are imported with their
+folders kept. Only `.dds` files are ever unpacked, and only inside the modded folder: entries
+like `../file` or `C:\file` are refused, and every file's checksum is verified. Labels from a
+package are added only for hashes you haven't labelled yourself.
 
 If two active textures have the same hash, the game uses the first one by relative path, so loose
 textures beat those in mods. The other copy is labelled *unused (duplicate)*.
@@ -84,7 +121,10 @@ The output goes to `build/bin/`: `ReResorep.exe` and `proxy/d3d11.dll`. Ship tha
 - `proxy/` is the `d3d11.dll` proxy. Pass-through exports are generated from `proxy/exports.txt`.
 - `manager/` is the ImGui texture manager.
 - `tests/` has `core_tests` (Blowfish test vectors, hash, DDS round-trip) and `proxy_test`
-  (loads the built proxy and checks replacement, encrypted packs, dumping and hot reload on a WARP device).
+  (loads the built proxy and checks replacement, encrypted packs, dumping and hot reload on a WARP device), and
+  `analyzer_test` (texture-type detection and normal-map matching on generated textures).
+  `tests/zip_fixture.inc` is a zip made by Python (`tools/gen_zip_fixture.py`), so the zip reader is tested against
+  another tool, including path-traversal entries.
 - `third_party/imgui` is Dear ImGui v1.91.8 (MIT).
 
 ## Compatibility notes, from reverse-engineering `dx11proxy64.dll`

@@ -188,21 +188,22 @@ bool ComputeSurfaceLayout(DXGI_FORMAT format, uint32_t width, uint32_t height, S
     return true;
 }
 
-bool ParseDds(std::vector<uint8_t>&& file, DdsImage& out, std::string* error) {
+namespace {
+// Fills everything but subresources/data; `offset` returns where pixel data starts.
+bool ParseHeader(const uint8_t* file, size_t size, DdsImage& out, size_t& offset, std::string* error) {
     out = DdsImage{};
-    const size_t size = file.size();
     if (size < 4 + sizeof(DdsHeader)) return Fail(error, "file too small"), false;
 
     uint32_t magic;
-    std::memcpy(&magic, file.data(), 4);
+    std::memcpy(&magic, file, 4);
     if (magic != kDdsMagic) return Fail(error, "not a DDS file"), false;
 
     DdsHeader hdr;
-    std::memcpy(&hdr, file.data() + 4, sizeof(hdr));
+    std::memcpy(&hdr, file + 4, sizeof(hdr));
     if (hdr.size != sizeof(DdsHeader) || hdr.ddspf.size != sizeof(DdsPixelFormat))
         return Fail(error, "corrupt DDS header"), false;
 
-    size_t offset = 4 + sizeof(DdsHeader);
+    offset = 4 + sizeof(DdsHeader);
     out.width = hdr.width;
     out.height = hdr.height;
     out.mipLevels = (hdr.flags & DDSD_MIPMAPCOUNT) ? std::max(1u, hdr.mipMapCount) : 1;
@@ -210,7 +211,7 @@ bool ParseDds(std::vector<uint8_t>&& file, DdsImage& out, std::string* error) {
     if ((hdr.ddspf.flags & DDPF_FOURCC) && hdr.ddspf.fourCC == FourCC('D', 'X', '1', '0')) {
         if (size < offset + sizeof(DdsHeaderDx10)) return Fail(error, "truncated DX10 header"), false;
         DdsHeaderDx10 ext;
-        std::memcpy(&ext, file.data() + offset, sizeof(ext));
+        std::memcpy(&ext, file + offset, sizeof(ext));
         offset += sizeof(ext);
         out.format = DXGI_FORMAT(ext.dxgiFormat);
         out.arraySize = std::max(1u, ext.arraySize);
@@ -233,6 +234,14 @@ bool ParseDds(std::vector<uint8_t>&& file, DdsImage& out, std::string* error) {
     if (!GetFormatInfo(out.format).known) return Fail(error, "unsupported pixel format"), false;
     if (out.width == 0 || out.height == 0 || out.width > 16384 || out.height > 16384 || out.mipLevels > 15)
         return Fail(error, "invalid dimensions"), false;
+    return true;
+}
+}  // namespace
+
+bool ParseDds(std::vector<uint8_t>&& file, DdsImage& out, std::string* error) {
+    const size_t size = file.size();
+    size_t offset = 0;
+    if (!ParseHeader(file.data(), size, out, offset, error)) return false;
 
     const uint32_t slices = out.arraySize * (out.isCubemap ? 6 : 1);
     for (uint32_t item = 0; item < slices; ++item) {
@@ -268,6 +277,145 @@ bool LoadTextureFile(const std::wstring& path, DdsImage& out, bool* wasEncrypted
         bytes.swap(plain);
     }
     return ParseDds(std::move(bytes), out, error);
+}
+
+bool LoadTextureMips(const std::wstring& path, uint32_t maxSize, DdsImage& out, bool* wasEncrypted,
+                     std::string* error) {
+    if (maxSize == 0) return LoadTextureFile(path, out, wasEncrypted, error);
+    std::ifstream in(path, std::ios::binary | std::ios::ate);
+    if (!in) return Fail(error, "cannot open file"), false;
+    const uint64_t fileSize = uint64_t(in.tellg());
+    in.seekg(0);
+    std::vector<uint8_t> head(size_t(std::min<uint64_t>(fileSize, 512)));
+    in.read(reinterpret_cast<char*>(head.data()), std::streamsize(head.size()));
+
+    uint8_t iv[8] = {};
+    size_t payload = 0;
+    const bool encrypted = IsEncryptedTexture(head.data(), head.size());
+    if (wasEncrypted) *wasEncrypted = encrypted;
+    std::vector<uint8_t> plainHead = head;
+    if (encrypted) {
+        payload = EncryptedPayloadOffset(head.data(), head.size(), iv);
+        if (!payload || !DecryptTexture(head.data(), head.size(), plainHead))
+            return Fail(error, "bad resorep1 header"), false;
+    }
+    DdsImage meta;
+    size_t offset = 0;
+    if (!ParseHeader(plainHead.data(), plainHead.size(), meta, offset, error)) return false;
+    if (meta.isVolume) return LoadTextureFile(path, out, wasEncrypted, error);
+
+    // Largest mip within maxSize; for block-compressed formats the new top level must be
+    // made of whole 4x4 blocks.
+    const bool bc = GetFormatInfo(meta.format).blockCompressed;
+    uint32_t start = 0;
+    while (start + 1 < meta.mipLevels && std::max(meta.width >> start, meta.height >> start) > maxSize) ++start;
+    while (bc && start > 0 && (((meta.width >> start) % 4) || ((meta.height >> start) % 4))) --start;
+
+    std::vector<size_t> mipOffset;
+    size_t end = offset;
+    for (uint32_t mip = 0; mip < meta.mipLevels; ++mip) {
+        SurfaceLayout layout;
+        ComputeSurfaceLayout(meta.format, meta.width >> mip, meta.height >> mip, layout);
+        mipOffset.push_back(end);
+        end += layout.size();
+    }
+    const size_t begin = mipOffset[start];
+    const uint64_t available = encrypted ? fileSize - payload : fileSize;
+    if (end > available) return Fail(error, "truncated pixel data"), false;
+
+    std::vector<uint8_t> data(end - begin);
+    if (!encrypted) {
+        in.seekg(std::streamoff(begin));
+        in.read(reinterpret_cast<char*>(data.data()), std::streamsize(data.size()));
+    } else {
+        // Whole cipher blocks covering [begin, end), plus the block before for chaining.
+        const size_t blockBegin = begin & ~size_t(7);
+        const size_t blockEnd = std::min<size_t>((end + 7) & ~size_t(7), size_t(available));
+        uint8_t prev[8];
+        if (blockBegin == 0) {
+            std::memcpy(prev, iv, 8);
+        } else {
+            in.seekg(std::streamoff(payload + blockBegin - 8));
+            in.read(reinterpret_cast<char*>(prev), 8);
+        }
+        std::vector<uint8_t> buf(blockEnd - blockBegin);
+        in.seekg(std::streamoff(payload + blockBegin));
+        in.read(reinterpret_cast<char*>(buf.data()), std::streamsize(buf.size()));
+        DecryptTextureRange(prev, buf.data(), buf.size());  // a partial tail block stays as stored
+        std::memcpy(data.data(), buf.data() + (begin - blockBegin), data.size());
+    }
+    if (!in) return Fail(error, "read failed"), false;
+
+    out = DdsImage{};
+    out.width = std::max(1u, meta.width >> start);
+    out.height = std::max(1u, meta.height >> start);
+    out.mipLevels = meta.mipLevels - start;
+    out.format = meta.format;
+    for (uint32_t mip = start; mip < meta.mipLevels; ++mip) {
+        SurfaceLayout layout;
+        ComputeSurfaceLayout(meta.format, meta.width >> mip, meta.height >> mip, layout);
+        out.subresources.push_back({mipOffset[mip] - begin, layout.rowPitch, uint32_t(layout.size())});
+    }
+    out.data = std::move(data);
+    return true;
+}
+
+DXGI_FORMAT ShaderViewFormat(DXGI_FORMAT f) {
+    switch (f) {
+        case DXGI_FORMAT_R32G32B32A32_TYPELESS: return DXGI_FORMAT_R32G32B32A32_FLOAT;
+        case DXGI_FORMAT_R16G16B16A16_TYPELESS: return DXGI_FORMAT_R16G16B16A16_UNORM;
+        case DXGI_FORMAT_R10G10B10A2_TYPELESS: return DXGI_FORMAT_R10G10B10A2_UNORM;
+        case DXGI_FORMAT_R8G8B8A8_TYPELESS: return DXGI_FORMAT_R8G8B8A8_UNORM;
+        case DXGI_FORMAT_R16G16_TYPELESS: return DXGI_FORMAT_R16G16_UNORM;
+        case DXGI_FORMAT_R32_TYPELESS: return DXGI_FORMAT_R32_FLOAT;
+        case DXGI_FORMAT_R8G8_TYPELESS: return DXGI_FORMAT_R8G8_UNORM;
+        case DXGI_FORMAT_R16_TYPELESS: return DXGI_FORMAT_R16_UNORM;
+        case DXGI_FORMAT_R8_TYPELESS: return DXGI_FORMAT_R8_UNORM;
+        case DXGI_FORMAT_BC1_TYPELESS: return DXGI_FORMAT_BC1_UNORM;
+        case DXGI_FORMAT_BC2_TYPELESS: return DXGI_FORMAT_BC2_UNORM;
+        case DXGI_FORMAT_BC3_TYPELESS: return DXGI_FORMAT_BC3_UNORM;
+        case DXGI_FORMAT_BC4_TYPELESS: return DXGI_FORMAT_BC4_UNORM;
+        case DXGI_FORMAT_BC5_TYPELESS: return DXGI_FORMAT_BC5_UNORM;
+        case DXGI_FORMAT_B8G8R8A8_TYPELESS: return DXGI_FORMAT_B8G8R8A8_UNORM;
+        case DXGI_FORMAT_B8G8R8X8_TYPELESS: return DXGI_FORMAT_B8G8R8X8_UNORM;
+        case DXGI_FORMAT_BC6H_TYPELESS: return DXGI_FORMAT_BC6H_UF16;
+        case DXGI_FORMAT_BC7_TYPELESS: return DXGI_FORMAT_BC7_UNORM;
+        default: return f;
+    }
+}
+
+bool IsSnormFormat(DXGI_FORMAT f) {
+    switch (f) {
+        case DXGI_FORMAT_R16G16B16A16_SNORM:
+        case DXGI_FORMAT_R8G8B8A8_SNORM:
+        case DXGI_FORMAT_R16G16_SNORM:
+        case DXGI_FORMAT_R8G8_SNORM:
+        case DXGI_FORMAT_R16_SNORM:
+        case DXGI_FORMAT_R8_SNORM:
+        case DXGI_FORMAT_BC4_SNORM:
+        case DXGI_FORMAT_BC5_SNORM: return true;
+        default: return false;
+    }
+}
+
+bool ReadTextureInfo(const std::wstring& path, DdsImage& out, bool* wasEncrypted) {
+    // The header (and DX10 extension) fits in the first 148 bytes; an encrypted pack adds
+    // its own header in front, so read a little more and decrypt just that.
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return false;
+    std::vector<uint8_t> bytes(256);
+    in.read(reinterpret_cast<char*>(bytes.data()), std::streamsize(bytes.size()));
+    bytes.resize(size_t(in.gcount()));
+
+    const bool encrypted = IsEncryptedTexture(bytes.data(), bytes.size());
+    if (wasEncrypted) *wasEncrypted = encrypted;
+    if (encrypted) {
+        std::vector<uint8_t> plain;
+        if (!DecryptTexture(bytes.data(), bytes.size(), plain)) return false;
+        bytes.swap(plain);
+    }
+    size_t offset = 0;
+    return ParseHeader(bytes.data(), bytes.size(), out, offset, nullptr);
 }
 
 std::vector<uint8_t> WriteDds(DXGI_FORMAT format, uint32_t width, uint32_t height,

@@ -18,10 +18,13 @@ set(RERESOREP_BIN ${CMAKE_BINARY_DIR}/bin)
 add_library(resorep_core STATIC
     core/blowfish.cpp
     core/dds.cpp
+    core/labels.cpp
+    core/mod_package.cpp
     core/mod_state.cpp
     core/resorep_crypto.cpp
     core/settings.cpp
     core/texture_index.cpp
+    core/zip.cpp
 )
 target_include_directories(resorep_core PUBLIC core)
 
@@ -37,3 +40,8 @@ add_executable(proxy_test tests/proxy_test.cpp)
 target_link_libraries(proxy_test PRIVATE resorep_core)
 add_dependencies(proxy_test proxy)
 add_test(NAME proxy_test COMMAND proxy_test $<TARGET_FILE:proxy>)
+
+add_executable(analyzer_test tests/analyzer_test.cpp manager/analyzer.cpp)
+target_include_directories(analyzer_test PRIVATE manager)
+target_link_libraries(analyzer_test PRIVATE resorep_core d3d11 d3dcompiler)
+add_test(NAME analyzer_test COMMAND analyzer_test)

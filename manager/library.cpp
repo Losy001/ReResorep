@@ -4,6 +4,7 @@
 #include <system_error>
 #include <unordered_map>
 
+#include "dds.h"
 #include "settings.h"
 #include "texture_index.h"
 #include "win_util.h"
@@ -22,18 +23,6 @@ std::wstring SanitizeName(const std::string& name) {
     return w;
 }
 
-TextureFile MakeFile(const fs::directory_entry& e, uint32_t hash) {
-    TextureFile f;
-    f.path = e.path();
-    f.hash = hash;
-    std::error_code ec;
-    f.size = e.file_size(ec);
-    const std::wstring name = e.path().filename().wstring();
-    const size_t tilde = name.find(L'~');
-    if (tilde != std::wstring::npos) f.label = WideToUtf8(name.substr(tilde + 1, name.rfind(L'.') - tilde - 1));
-    return f;
-}
-
 // Sorts "a", "a/b", "a b" so children directly follow their parent.
 std::wstring TreeKey(const std::wstring& rel) {
     std::wstring k = DisabledSet::Key(rel);
@@ -43,6 +32,30 @@ std::wstring TreeKey(const std::wstring& rel) {
 }  // namespace
 
 Library::~Library() { CloseWatches(); }
+
+TextureFile Library::MakeFile(const fs::directory_entry& e, uint32_t hash) {
+    TextureFile f;
+    f.path = e.path();
+    f.hash = hash;
+    std::error_code ec;
+    f.size = e.file_size(ec);
+    f.modified = e.last_write_time(ec).time_since_epoch().count();
+    const std::wstring name = e.path().filename().wstring();
+    const size_t tilde = name.find(L'~');
+    if (tilde != std::wstring::npos) f.label = WideToUtf8(name.substr(tilde + 1, name.rfind(L'.') - tilde - 1));
+
+    auto [it, inserted] = infoCache_.try_emplace(f.path.wstring());
+    CachedInfo& c = it->second;
+    if (inserted || c.modified != f.modified || c.size != f.size) {
+        DdsImage header;
+        const bool ok = ReadTextureInfo(f.path.wstring(), header);
+        c = {f.modified, f.size, ok ? header.width : 0, ok ? header.height : 0, ok ? header.format : DXGI_FORMAT_UNKNOWN};
+    }
+    f.width = c.width;
+    f.height = c.height;
+    f.format = c.format;
+    return f;
+}
 
 void Library::SetFolders(const fs::path& modded, const fs::path& original) {
     modded_ = modded;

@@ -39,6 +39,18 @@ bool DecryptTexture(const uint8_t* data, size_t size, std::vector<uint8_t>& out)
     return true;
 }
 
+size_t EncryptedPayloadOffset(const uint8_t* data, size_t size, uint8_t iv[8]) {
+    if (!IsEncryptedTexture(data, size)) return 0;
+    const size_t ivLen = data[8];
+    if (ivLen < 8 || size < kHeader + ivLen) return 0;
+    std::memcpy(iv, data + kHeader, 8);
+    return kHeader + ivLen;
+}
+
+void DecryptTextureRange(const uint8_t previousCipherBlock[8], uint8_t* data, size_t len) {
+    Cipher().DecryptCbc(previousCipherBlock, data, len);
+}
+
 std::vector<uint8_t> EncryptTexture(const uint8_t* dds, size_t size, const uint8_t iv[8]) {
     std::vector<uint8_t> out(kHeader + 8 + ((size + 7) & ~size_t(7)), 0);
     std::memcpy(out.data(), kMagic, sizeof(kMagic));

@@ -48,6 +48,21 @@ bool ParseDds(std::vector<uint8_t>&& file, DdsImage& out, std::string* error = n
 bool LoadTextureFile(const std::wstring& path, DdsImage& out, bool* wasEncrypted = nullptr,
                      std::string* error = nullptr);
 
+// Like LoadTextureFile, but reads just the mips of the first slice whose size is at most
+// `maxSize` (the result's mip 0 is that mip). Much cheaper for thumbnails and analysis of
+// big textures, encrypted ones included. maxSize 0 loads everything.
+bool LoadTextureMips(const std::wstring& path, uint32_t maxSize, DdsImage& out, bool* wasEncrypted = nullptr,
+                     std::string* error = nullptr);
+
+// Typed equivalent of a TYPELESS format, for shader resource views.
+DXGI_FORMAT ShaderViewFormat(DXGI_FORMAT format);
+// True for formats whose values sample as -1..1.
+bool IsSnormFormat(DXGI_FORMAT format);
+
+// Reads only the header (width, height, mips, format), decrypting just the start of a
+// resorep1 pack. Cheap enough to run over a whole texture folder.
+bool ReadTextureInfo(const std::wstring& path, DdsImage& out, bool* wasEncrypted = nullptr);
+
 // Serialises 2D mips into a .dds. Uses a legacy header when an equivalent exists so older
 // editors can open the file, otherwise a DX10 header.
 struct MipData {

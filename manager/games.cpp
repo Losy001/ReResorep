@@ -1,6 +1,7 @@
 #include "games.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <system_error>
 
 #include "win_util.h"
@@ -49,6 +50,12 @@ void ManagerSettings::Load() {
     saveTextures = ini.GetBool(keys::kSaveTextures, false);
     logEnabled = ini.GetBool(keys::kLogEnabled, false);
     logDebug = ini.GetOr(keys::kLogLevel, "") == "debug";
+    sortKey = ini.GetOr("ui_sort", "hash");
+    sortDescending = ini.GetBool("ui_sort_descending", false);
+    previewRotation = ((std::atoi(ini.GetOr("ui_preview_rotation", "180").c_str()) / 90 % 4 + 4) % 4) * 90;
+    previewMirror = ini.GetBool("ui_preview_mirror", false);
+    hideNormals = ini.GetBool("ui_hide_normals", false);
+    hideGrayscale = ini.GetBool("ui_hide_grayscale", false);
     games.clear();
     for (const std::string& g : ini.GetAll("game")) games.emplace_back(Utf8ToWide(g));
 }
@@ -62,6 +69,12 @@ bool ManagerSettings::Save() const {
     ini.SetBool(keys::kSaveTextures, saveTextures);
     ini.SetBool(keys::kLogEnabled, logEnabled);
     ini.Set(keys::kLogLevel, logDebug ? "debug" : "info");
+    ini.Set("ui_sort", sortKey);
+    ini.SetBool("ui_sort_descending", sortDescending);
+    ini.Set("ui_preview_rotation", std::to_string(previewRotation));
+    ini.SetBool("ui_preview_mirror", previewMirror);
+    ini.SetBool("ui_hide_normals", hideNormals);
+    ini.SetBool("ui_hide_grayscale", hideGrayscale);
     std::vector<std::string> list;
     for (const auto& g : games) list.push_back(WideToUtf8(g.wstring()));
     ini.SetAll("game", list);

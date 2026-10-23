@@ -7,9 +7,15 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
+#include <imgui.h>
+
+#include "analyzer.h"
 #include "games.h"
+#include "labels.h"
+#include "mod_package.h"
 #include "library.h"
 #include "thumbnails.h"
 
@@ -43,6 +49,13 @@ private:
     bool InView(const TextureFile& file) const;
     std::wstring ImportDir() const { return modView_ == ModView::Folder ? viewFolder_ : std::wstring(); }
     void DrawToolbarDumps();
+    void DrawViewOptions(bool isMod);
+    void SortVisible(std::vector<const TextureFile*>& files, bool isMod) const;
+    // Draws a texture with the chosen preview rotation/mirroring, fitted into a box.
+    // extraTurns/extraMirror add to the global setting (used by the details preview's own buttons).
+    void DrawPreview(ImDrawList* dl, ID3D11ShaderResourceView* srv, uint32_t w, uint32_t h, ImVec2 boxMin,
+                     ImVec2 boxSize, ImU32 tint, int extraTurns = 0, bool extraMirror = false) const;
+    ImVec2 PreviewSize(uint32_t w, uint32_t h, float box, int extraTurns = 0) const;
     void DrawGrid(const std::vector<TextureFile>& files, bool isMod);
     void DrawCard(const TextureFile& file, bool isMod, float size);
     void DrawDetails();
@@ -50,6 +63,53 @@ private:
     void DrawSettings();
     void DrawImportPopup();
     void DrawStatusBar();
+    void DrawSimilarWindow();
+    void DrawLabelEditor(const TextureFile& file, float width);
+
+    // Labels and similarity search.
+    enum class SimilarMode { Normals, Colors, Any };
+    struct SimilarResult {
+        std::filesystem::path path;
+        bool isMod;
+        uint32_t hash;
+        float score;
+        TextureKind kind;
+        uint32_t width, height;
+    };
+    struct SimilarSearch {
+        TextureFile source;
+        bool sourceIsMod = false;
+        SimilarMode mode = SimilarMode::Normals;
+        bool computed = false;
+        size_t notAnalysed = 0;
+        std::vector<SimilarResult> results;
+    };
+    const std::string& DisplayLabel(const TextureFile& file) const;
+    bool MatchesFilter(const TextureFile& file) const;
+    TextureKind KindOf(const TextureFile& file) { return analyzer_->Kind(file.path, file.modified, file.size); }
+    void SetLabel(uint32_t hash, const std::string& label);
+    void ImportLabels();
+    void ExportLabels();
+    void OpenSimilar(const TextureFile& file, bool isMod, SimilarMode mode);
+    void ComputeSimilar();
+    void QueueAnalysis();
+
+    // Mod packages (.zip).
+    struct ExportDialog {
+        std::wstring rel;
+        std::string name;
+        size_t textures = 0;
+        bool includeTurnedOff = true;
+        bool includeLabels = true;
+    };
+    struct ImportModDialog {
+        std::filesystem::path zip;
+        PackageInfo info;
+        char name[96] = {};
+        bool merge = false;
+    };
+    void BeginImportMod(const std::filesystem::path& zip);
+    void DrawPackagePopups();
 
     void ImportFiles(const std::vector<std::filesystem::path>& files, const std::wstring& relDir);
     void ReplaceDump(uint32_t hash);
@@ -65,6 +125,21 @@ private:
     Library library_;
     ManagerSettings settings_;
     std::vector<GameState> games_;
+    LabelStore labels_;
+    std::unique_ptr<TextureAnalyzer> analyzer_;
+    std::optional<SimilarSearch> similar_;
+    char labelEdit_[128] = {};
+    std::optional<uint32_t> labelEditHash_;
+    bool focusLabel_ = false;
+    struct PreviewTweak {
+        int quarterTurns = 0;  // clockwise
+        bool mirror = false;
+    };
+    std::unordered_map<uint32_t, PreviewTweak> previewTweaks_;  // per hash, this session only
+    std::optional<ExportDialog> exportDialog_;
+    std::optional<ImportModDialog> importModDialog_;
+    bool openExportPopup_ = false;
+    bool openImportModPopup_ = false;
 
     Tab tab_ = Tab::Mods;
     std::optional<Selection> selection_;

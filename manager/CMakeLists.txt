@@ -16,6 +16,7 @@ add_executable(ReResorep WIN32
     games.cpp
     library.cpp
     thumbnails.cpp
+    analyzer.cpp
     win_util.cpp
     manager.manifest
     app.rc

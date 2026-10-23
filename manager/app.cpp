@@ -7,6 +7,8 @@
 #include <cstdio>
 #include <cctype>
 #include <cstring>
+#include <fstream>
+#include <iterator>
 
 #include "dds.h"
 #include "mod_state.h"
@@ -26,10 +28,29 @@ constexpr float kSidebarWidth = 260.0f;
 
 ImTextureID ToTexId(ID3D11ShaderResourceView* srv) { return (ImTextureID)(uintptr_t)srv; }
 
-// The game's textures come out rotated 180 degrees on screen, so every preview is drawn
-// with swapped UVs (mirrored on both X and Y). Display only; files are untouched.
-const ImVec2 kPreviewUv0(1, 1);
-const ImVec2 kPreviewUv1(0, 0);
+struct SortOption {
+    const char* key;
+    const char* label;
+    bool modsOnly;
+};
+constexpr SortOption kSortOptions[] = {
+    {"hash", "Hash", false},          {"name", "Name", false},
+    {"date", "Date modified", false}, {"filesize", "File size", false},
+    {"resolution", "Resolution", false}, {"format", "Format", false},
+    {"category", "Mod / category", true},
+};
+
+std::string FormatDate(int64_t fileTimeTicks) {
+    // MSVC's file_clock counts 100 ns ticks since 1601, exactly like FILETIME.
+    FILETIME ft{DWORD(uint64_t(fileTimeTicks)), DWORD(uint64_t(fileTimeTicks) >> 32)};
+    SYSTEMTIME utc, local;
+    if (!fileTimeTicks || !FileTimeToSystemTime(&ft, &utc) || !SystemTimeToTzSpecificLocalTime(nullptr, &utc, &local))
+        return "-";
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%04u-%02u-%02u %02u:%02u", local.wYear, local.wMonth, local.wDay, local.wHour,
+             local.wMinute);
+    return buf;
+}
 
 std::optional<uint32_t> ParseHash(const char* text) {
     if (!*text) return std::nullopt;
@@ -39,15 +60,15 @@ std::optional<uint32_t> ParseHash(const char* text) {
     return uint32_t(v);
 }
 
-bool MatchesFilter(const TextureFile& f, const char* filter) {
-    if (!*filter) return true;
-    const std::string hash = std::to_string(f.hash);
-    if (hash.find(filter) != std::string::npos) return true;
-    std::string label = f.label, needle = filter;
-    for (char& c : label) c = char(std::tolower(static_cast<unsigned char>(c)));
-    for (char& c : needle) c = char(std::tolower(static_cast<unsigned char>(c)));
-    return label.find(needle) != std::string::npos;
+std::string Lower(std::string s) {
+    for (char& c : s) c = char(std::tolower(static_cast<unsigned char>(c)));
+    return s;
 }
+
+fs::path LabelsFile() { return ExeDirectory() / LabelStore::kFileName; }
+
+const ImU32 kKindColors[] = {0, 0, IM_COL32(120, 150, 255, 255), IM_COL32(200, 200, 200, 255)};
+const char* const kKindBadges[] = {"", "", "normal", "depth"};
 
 // Fits a w x h image into a box, keeping aspect ratio.
 ImVec2 Fit(uint32_t w, uint32_t h, float box) {
@@ -70,8 +91,110 @@ void HelpMarker(const char* text) {
 
 App::App(HWND hwnd, ID3D11Device* device) : hwnd_(hwnd), thumbs_(device) {
     settings_.Load();
+    labels_.Load(LabelsFile());
+    analyzer_ = std::make_unique<TextureAnalyzer>(ExeDirectory() / L"texture_analysis.cache");
     library_.SetFolders(settings_.moddedFolder, settings_.originalFolder);
+    QueueAnalysis();
     RefreshGames();
+}
+
+void App::QueueAnalysis() {
+    // Kind() queues anything not analysed yet; results are cached on disk.
+    for (const auto& f : library_.mods()) KindOf(f);
+    for (const auto& f : library_.dumps()) KindOf(f);
+}
+
+const std::string& App::DisplayLabel(const TextureFile& file) const {
+    if (const std::string* user = labels_.Get(file.hash)) return *user;
+    return file.label;
+}
+
+bool App::MatchesFilter(const TextureFile& f) const {
+    if (!filter_[0]) return true;
+    if (std::to_string(f.hash).find(filter_) != std::string::npos) return true;
+    const std::string needle = Lower(filter_);
+    if (Lower(f.label).find(needle) != std::string::npos) return true;
+    const std::string* user = labels_.Get(f.hash);
+    return user && Lower(*user).find(needle) != std::string::npos;
+}
+
+void App::SetLabel(uint32_t hash, const std::string& label) {
+    labels_.Set(hash, label);
+    Status(labels_.Save(LabelsFile()) ? "" : "Could not write labels.txt next to ReResorep.exe",
+           label.empty() ? "Label removed" : "Label saved");
+}
+
+void App::ImportLabels() {
+    auto files = PickFiles(hwnd_, L"Import labels", {{L"Label files", L"*.txt;*.ini;*.csv"}, {L"All files", L"*.*"}},
+                           false);
+    if (files.empty()) return;
+    std::ifstream in(files[0], std::ios::binary);
+    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    const auto entries = LabelStore::Parse(text);
+    if (entries.empty()) {
+        Status("No labels found in that file (expected lines like 3123456789=Ash helmet)", "");
+        return;
+    }
+    const size_t changed = labels_.Merge(entries, true);
+    const bool saved = labels_.Save(LabelsFile());
+    Status(saved ? "" : "Could not write labels.txt next to ReResorep.exe",
+           "Imported " + std::to_string(entries.size()) + " labels (" + std::to_string(changed) + " new or changed)");
+}
+
+void App::ExportLabels() {
+    auto target = PickSaveFile(hwnd_, L"Export labels", L"reresorep_labels.txt", {{L"Label files", L"*.txt"}});
+    if (!target) return;
+    std::ofstream out(*target, std::ios::binary | std::ios::trunc);
+    const std::string text = labels_.Serialize();
+    out.write(text.data(), std::streamsize(text.size()));
+    Status(out ? "" : "Could not write " + ToUtf8(*target),
+           "Exported " + std::to_string(labels_.size()) + " labels to " + ToUtf8(target->filename()));
+}
+
+void App::OpenSimilar(const TextureFile& file, bool isMod, SimilarMode mode) {
+    similar_ = SimilarSearch{file, isMod, mode};
+    ComputeSimilar();
+}
+
+void App::ComputeSimilar() {
+    SimilarSearch& s = *similar_;
+    const TextureFile& src = s.source;
+    const auto srcTraits = analyzer_->Traits(src.path, src.modified, src.size);
+    s.results.clear();
+    s.notAnalysed = 0;
+    s.computed = srcTraits.has_value();
+    if (!srcTraits) return;
+
+    auto consider = [&](const TextureFile& f, bool isMod) {
+        if (f.path == src.path || f.hash == src.hash) return;
+        // Material textures share an aspect ratio; usually the exact size.
+        if (src.width && f.width && uint64_t(src.width) * f.height != uint64_t(f.width) * src.height) return;
+        const auto t = analyzer_->Traits(f.path, f.modified, f.size);
+        if (!t || t->kind == TextureKind::Unknown) {
+            ++s.notAnalysed;
+            return;
+        }
+        if (s.mode == SimilarMode::Normals && t->kind != TextureKind::Normal) return;
+        if (s.mode == SimilarMode::Colors && t->kind != TextureKind::Color) return;
+
+        const float detail = std::max(0.0f, DetailSimilarity(*srcTraits, *t));
+        const float sizeScore = (f.width == src.width && f.height == src.height) ? 1.0f : 0.4f;
+        float score;
+        if (!isMod && !s.sourceIsMod) {
+            // Games load a material's textures together, so dumps of one material were
+            // written within moments of each other.
+            const double seconds = std::fabs(double(f.modified - src.modified)) / 1e7;
+            const float timeScore = float(1.0 / (1.0 + seconds / 5.0));
+            score = 0.65f * detail + 0.15f * sizeScore + 0.20f * timeScore;
+        } else {
+            score = 0.8f * detail + 0.2f * sizeScore;
+        }
+        if (score > 0.05f) s.results.push_back({f.path, isMod, f.hash, score, t->kind, f.width, f.height});
+    };
+    for (const auto& f : library_.dumps()) consider(f, false);
+    for (const auto& f : library_.mods()) consider(f, true);
+    std::sort(s.results.begin(), s.results.end(), [](const auto& a, const auto& b) { return a.score > b.score; });
+    if (s.results.size() > 50) s.results.resize(50);
 }
 
 void App::Status(const std::string& error, const std::string& success) {
@@ -111,7 +234,118 @@ const TextureFile* App::FindSelected() const {
     return nullptr;
 }
 
-void App::OnDropFiles(const std::vector<fs::path>& files) { ImportFiles(files, ImportDir()); }
+void App::OnDropFiles(const std::vector<fs::path>& files) {
+    std::vector<fs::path> textures;
+    for (const fs::path& f : files) {
+        if (_wcsicmp(f.extension().c_str(), L".zip") == 0) BeginImportMod(f);  // one package at a time
+        else textures.push_back(f);
+    }
+    if (!textures.empty()) ImportFiles(textures, ImportDir());
+}
+
+void App::BeginImportMod(const fs::path& zip) {
+    ImportModDialog d;
+    d.zip = zip;
+    d.info = InspectModPackage(zip);
+    if (!d.info.error.empty()) {
+        Status(d.info.error, "");
+        return;
+    }
+    snprintf(d.name, sizeof(d.name), "%s", d.info.name.c_str());
+    importModDialog_ = std::move(d);
+    openImportModPopup_ = true;
+}
+
+void App::DrawPackagePopups() {
+    if (openExportPopup_) {
+        ImGui::OpenPopup("Export mod");
+        openExportPopup_ = false;
+    }
+    if (exportDialog_ && ImGui::BeginPopupModal("Export mod", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ExportDialog& d = *exportDialog_;
+        ImGui::Text("Export \"%s\" (%zu textures) as a .zip package.", d.name.c_str(), d.textures);
+        ImGui::Checkbox("Include textures and categories that are turned off", &d.includeTurnedOff);
+        ImGui::SetItemTooltip("They stay turned off for whoever imports the package.");
+        ImGui::Checkbox("Include my labels for these textures", &d.includeLabels);
+        ImGui::Spacing();
+        if (ImGui::Button("Export...", ImVec2(120, 0))) {
+            const ExportDialog copy = d;
+            ImGui::CloseCurrentPopup();
+            exportDialog_.reset();
+            Defer([this, copy] {
+                const std::wstring fileName = SafeFolderName(copy.name) + L".zip";
+                auto target = PickSaveFile(hwnd_, L"Export mod", fileName.c_str(), {{L"Mod package (.zip)", L"*.zip"}}, L"zip");
+                if (!target) return;
+                const PackageResult r = ExportModPackage(library_.moddedFolder(), copy.rel, *target,
+                                                         {copy.includeTurnedOff, copy.includeLabels}, labels_);
+                Status(r.error, "Exported " + std::to_string(r.textures) + " textures (" + FormatBytes(r.bytes) +
+                                    (r.labels ? ", " + std::to_string(r.labels) + " labels" : std::string()) + ") to " +
+                                    ToUtf8(target->filename()));
+            });
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(120, 0))) {
+            ImGui::CloseCurrentPopup();
+            exportDialog_.reset();
+        }
+        ImGui::EndPopup();
+    }
+
+    if (openImportModPopup_) {
+        ImGui::OpenPopup("Import mod");
+        openImportModPopup_ = false;
+    }
+    if (importModDialog_ && ImGui::BeginPopupModal("Import mod", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImportModDialog& d = *importModDialog_;
+        ImGui::Text("%s", ToUtf8(d.zip.filename()).c_str());
+        ImGui::TextColored(kDimColor, "%zu textures, %s%s%s", d.info.textures, FormatBytes(d.info.bytes).c_str(),
+                           d.info.labels ? (", " + std::to_string(d.info.labels) + " labels").c_str() : "",
+                           d.info.fromReResorep ? "" : " (plain zip)");
+        ImGui::Spacing();
+        ImGui::SetNextItemWidth(320);
+        ImGui::InputText("Mod name", d.name, sizeof(d.name));
+        const std::wstring folder = SafeFolderName(d.name);
+        const bool exists = !folder.empty() && fs::exists(library_.moddedFolder() / folder);
+        if (folder.empty()) {
+            ImGui::TextColored(kErrorColor, "Enter a name for the mod.");
+        } else if (exists) {
+            ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "A mod named \"%s\" already exists.", WideToUtf8(folder).c_str());
+            ImGui::Checkbox("Merge into it (replace files with the same name)", &d.merge);
+        }
+        if (d.info.labels)
+            ImGui::TextColored(kDimColor, "Labels are added only for hashes you have not labelled yourself.");
+        ImGui::Spacing();
+        ImGui::BeginDisabled(folder.empty() || (exists && !d.merge));
+        if (ImGui::Button("Import", ImVec2(120, 0))) {
+            const ImportModDialog copy = d;
+            ImGui::CloseCurrentPopup();
+            importModDialog_.reset();
+            Defer([this, copy] {
+                const PackageResult r =
+                    ImportModPackage(copy.zip, library_.moddedFolder(), copy.name, copy.merge, labels_);
+                if (r.labels) labels_.Save(LabelsFile());
+                library_.Refresh();
+                QueueAnalysis();
+                std::string msg = "Imported " + std::to_string(r.textures) + " textures into \"" + copy.name + "\"";
+                if (r.labels) msg += ", " + std::to_string(r.labels) + " new labels";
+                if (r.skipped) msg += " (" + std::to_string(r.skipped) + " entries skipped)";
+                Status(r.error, msg);
+                if (r.error.empty()) {
+                    tab_ = Tab::Mods;
+                    modView_ = ModView::Folder;
+                    viewFolder_ = SafeFolderName(copy.name);
+                }
+            });
+        }
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(120, 0))) {
+            ImGui::CloseCurrentPopup();
+            importModDialog_.reset();
+        }
+        ImGui::EndPopup();
+    }
+}
 
 void App::ImportFiles(const std::vector<fs::path>& files, const std::wstring& relDir) {
     int imported = 0;
@@ -167,7 +401,11 @@ void App::ReplaceDump(uint32_t hash) {
 }
 
 void App::Frame() {
-    if (library_.RefreshIfChanged() && selection_ && !FindSelected()) selection_.reset();
+    if (library_.RefreshIfChanged()) {
+        if (selection_ && !FindSelected()) selection_.reset();
+        QueueAnalysis();
+    }
+    if (similar_ && !similar_->computed) ComputeSimilar();  // waiting for the source's analysis
 
     const ImGuiViewport* vp = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(vp->WorkPos);
@@ -210,7 +448,9 @@ void App::Frame() {
             DrawGrid(mods ? library_.mods() : library_.dumps(), mods);
             ImGui::EndChild();
             ImGui::SameLine();
-            ImGui::BeginChild("details", ImVec2(0, 0), ImGuiChildFlags_Borders);
+            // Always-on scrollbar: otherwise a tall preview adds a scrollbar, which narrows the
+            // panel, which shrinks the preview, which removes the scrollbar... every frame.
+            ImGui::BeginChild("details", ImVec2(0, 0), ImGuiChildFlags_Borders, ImGuiWindowFlags_AlwaysVerticalScrollbar);
             DrawDetails();
             ImGui::EndChild();
             break;
@@ -222,7 +462,9 @@ void App::Frame() {
     DrawStatusBar();
     DrawImportPopup();
     DrawFolderPopups();
+    DrawPackagePopups();
     ImGui::End();
+    DrawSimilarWindow();
 
     // Actions that rescan the library run here, after nothing points into it any more.
     auto actions = std::move(deferred_);
@@ -247,9 +489,7 @@ void App::DrawToolbarMods() {
     ImGui::SameLine();
     ImGui::SetNextItemWidth(160);
     ImGui::InputTextWithHint("##filter", "Filter hash / name", filter_, sizeof(filter_));
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(120);
-    ImGui::SliderFloat("##size", &thumbSize_, 64.0f, 256.0f, "Size %.0f");
+    DrawViewOptions(true);
 }
 
 void App::DrawSidebar() {
@@ -270,11 +510,19 @@ void App::DrawSidebar() {
     for (size_t i = 0; i < folders.size();) DrawFolderNode(i);
 
     ImGui::Spacing();
-    if (ImGui::Button("+ New mod", ImVec2(-1, 0))) {
+    const float half = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x) * 0.5f;
+    if (ImGui::Button("+ New mod", ImVec2(half, 0))) {
         newFolderParent_.clear();
         newFolderName_[0] = 0;
         openNewFolderPopup_ = true;
     }
+    ImGui::SameLine();
+    if (ImGui::Button("Import mod...", ImVec2(-1, 0))) {
+        auto zips = PickFiles(hwnd_, L"Import a mod package", {{L"Mod packages (.zip)", L"*.zip"}}, false);
+        if (!zips.empty()) BeginImportMod(zips[0]);
+    }
+    ImGui::SetItemTooltip("Import a .zip exported from ReResorep, or any zip of .dds textures.\n"
+                          "You can also drop a .zip onto this window.");
     ImGui::EndChild();
 }
 
@@ -320,6 +568,10 @@ void App::DrawFolderNode(size_t& index) {
                 ImportFiles(PickFiles(hwnd_, L"Import modded textures", {{L"DirectDraw Surface", L"*.dds"}}, true), rel);
             });
         if (ImGui::MenuItem("Open folder")) OpenWithShell(library_.moddedFolder() / rel);
+        if (ImGui::MenuItem(f.depth == 1 ? "Export mod..." : "Export category as mod...")) {
+            exportDialog_ = ExportDialog{rel, f.name, f.total};
+            openExportPopup_ = true;
+        }
         ImGui::Separator();
         if (ImGui::MenuItem("Move to Recycle Bin...")) {
             deleteFolder_ = rel;
@@ -416,13 +668,122 @@ void App::DrawToolbarDumps() {
     ImGui::SameLine();
     ImGui::SetNextItemWidth(160);
     ImGui::InputTextWithHint("##filter", "Filter hash", filter_, sizeof(filter_));
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(120);
-    ImGui::SliderFloat("##size", &thumbSize_, 64.0f, 256.0f, "Size %.0f");
     if (!settings_.modCreatorMode || !settings_.saveTextures) {
         ImGui::SameLine();
         ImGui::TextColored(kDimColor, "Dumping is off - enable it in Settings.");
     }
+    DrawViewOptions(false);
+}
+
+void App::SortVisible(std::vector<const TextureFile*>& files, bool isMod) const {
+    const std::string& key = settings_.sortKey;
+    // Returns <0, 0, >0 like strcmp, before applying the direction.
+    auto compare = [&](const TextureFile& a, const TextureFile& b) -> int {
+        auto cmp = [](auto x, auto y) { return x < y ? -1 : (y < x ? 1 : 0); };
+        if (key == "name") {
+            const int c = cmp(Lower(DisplayLabel(a)), Lower(DisplayLabel(b)));
+            return c ? c : cmp(a.path.filename().wstring(), b.path.filename().wstring());
+        }
+        if (key == "date") return cmp(a.modified, b.modified);
+        if (key == "filesize") return cmp(a.size, b.size);
+        if (key == "resolution") {
+            const int c = cmp(uint64_t(a.width) * a.height, uint64_t(b.width) * b.height);
+            return c ? c : cmp(a.width, b.width);
+        }
+        if (key == "format") return cmp(std::string(FormatName(a.format)), std::string(FormatName(b.format)));
+        if (key == "category" && isMod) return cmp(DisabledSet::Key(a.relDir), DisabledSet::Key(b.relDir));
+        return 0;  // "hash": the tie-break below
+    };
+    const bool desc = settings_.sortDescending;
+    std::stable_sort(files.begin(), files.end(), [&](const TextureFile* a, const TextureFile* b) {
+        int c = compare(*a, *b);
+        if (!c) c = a->hash < b->hash ? -1 : (a->hash > b->hash ? 1 : 0);
+        if (!c) return a->path < b->path;
+        return desc ? c > 0 : c < 0;
+    });
+}
+
+ImVec2 App::PreviewSize(uint32_t w, uint32_t h, float box, int extraTurns) const {
+    // A quarter turn swaps the on-screen aspect ratio.
+    const int k = (settings_.previewRotation / 90 + extraTurns) & 3;
+    return k % 2 ? Fit(h, w, box) : Fit(w, h, box);
+}
+
+void App::DrawPreview(ImDrawList* dl, ID3D11ShaderResourceView* srv, uint32_t w, uint32_t h, ImVec2 boxMin,
+                      ImVec2 boxSize, ImU32 tint, int extraTurns, bool extraMirror) const {
+    const ImVec2 fit = PreviewSize(w, h, std::min(boxSize.x, boxSize.y), extraTurns);
+    const ImVec2 a(boxMin.x + (boxSize.x - fit.x) * 0.5f, boxMin.y + (boxSize.y - fit.y) * 0.5f);
+    const ImVec2 b(a.x + fit.x, a.y + fit.y);
+    // Texture corners in clockwise order starting top-left; rotating the picture
+    // clockwise by k quarter turns shows corner (i - k) at screen corner i.
+    static const ImVec2 kCorners[4] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}};
+    const int k = (settings_.previewRotation / 90 + extraTurns) & 3;
+    ImVec2 uv[4];
+    for (int i = 0; i < 4; ++i) uv[i] = kCorners[(i - k + 4) & 3];
+    if (settings_.previewMirror != extraMirror) {
+        std::swap(uv[0], uv[1]);
+        std::swap(uv[2], uv[3]);
+    }
+    dl->AddImageQuad(ToTexId(srv), a, ImVec2(b.x, a.y), b, ImVec2(a.x, b.y), uv[0], uv[1], uv[2], uv[3], tint);
+}
+
+void App::DrawViewOptions(bool isMod) {
+    // Second toolbar row: how the grid is ordered and how previews are oriented.
+    const SortOption* current = &kSortOptions[0];
+    for (const SortOption& o : kSortOptions)
+        if (settings_.sortKey == o.key && (isMod || !o.modsOnly)) current = &o;
+    bool changed = false;
+
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("Sort by");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(150);
+    if (ImGui::BeginCombo("##sort", current->label)) {
+        for (const SortOption& o : kSortOptions) {
+            if (o.modsOnly && !isMod) continue;
+            if (ImGui::Selectable(o.label, &o == current)) {
+                settings_.sortKey = o.key;
+                changed = true;
+            }
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::SameLine(0, 4);
+    if (ImGui::ArrowButton("##dir", settings_.sortDescending ? ImGuiDir_Down : ImGuiDir_Up)) {
+        settings_.sortDescending = !settings_.sortDescending;
+        changed = true;
+    }
+    ImGui::SetItemTooltip(settings_.sortDescending ? "Descending (largest / newest first)"
+                                                   : "Ascending (smallest / oldest first)");
+
+    ImGui::SameLine(0, 20);
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("Rotate");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(80);
+    static const char* kRotations[] = {"0\xC2\xB0", "90\xC2\xB0", "180\xC2\xB0", "270\xC2\xB0"};
+    int rotation = settings_.previewRotation / 90;
+    if (ImGui::Combo("##rotate", &rotation, kRotations, 4)) {
+        settings_.previewRotation = rotation * 90;
+        changed = true;
+    }
+    ImGui::SetItemTooltip("Turns previews clockwise. Only changes how they are shown, not the files.");
+    ImGui::SameLine();
+    changed |= ImGui::Checkbox("Mirror", &settings_.previewMirror);
+    ImGui::SetItemTooltip("Flips previews left-to-right (after rotating).");
+
+    ImGui::SameLine(0, 20);
+    changed |= ImGui::Checkbox("Hide normal maps", &settings_.hideNormals);
+    ImGui::SameLine();
+    changed |= ImGui::Checkbox("Hide depth / grayscale", &settings_.hideGrayscale);
+    ImGui::SetItemTooltip("Textures with no colour and no transparency: depth/height, roughness, masks.\n"
+                          "Icons and decals on a transparent background are not hidden.\n"
+                          "Texture types are detected automatically in the background.");
+
+    ImGui::SameLine(0, 20);
+    ImGui::SetNextItemWidth(120);
+    ImGui::SliderFloat("##size", &thumbSize_, 64.0f, 256.0f, "Size %.0f");
+    if (changed) settings_.Save();
 }
 
 void App::DrawGrid(const std::vector<TextureFile>& files, bool isMod) {
@@ -432,8 +793,14 @@ void App::DrawGrid(const std::vector<TextureFile>& files, bool isMod) {
         if (isMod && !showDisabled_ && !f.enabled) continue;
         if (isMod && !InView(f)) continue;
         if (!isMod && hideModdedDumps_ && library_.IsModded(f.hash)) continue;
-        if (MatchesFilter(f, filter_)) visible.push_back(&f);
+        if (settings_.hideNormals || settings_.hideGrayscale) {
+            const TextureKind kind = KindOf(f);
+            if (settings_.hideNormals && kind == TextureKind::Normal) continue;
+            if (settings_.hideGrayscale && kind == TextureKind::Grayscale) continue;
+        }
+        if (MatchesFilter(f)) visible.push_back(&f);
     }
+    SortVisible(visible, isMod);
     if (visible.empty()) {
         ImGui::TextColored(kDimColor, isMod ? "No textures here yet. Import .dds files or drop them here."
                                             : "No dumped textures. Turn on dumping in Settings and play the game.");
@@ -476,10 +843,8 @@ void App::DrawCard(const TextureFile& file, bool isMod, float size) {
     const TextureInfo* info = nullptr;
     ID3D11ShaderResourceView* srv = thumbs_.Get(file.path, uint32_t(size), &info);
     if (srv && info) {
-        const ImVec2 fit = Fit(info->width, info->height, size - 8);
-        const ImVec2 a(pos.x + (size - fit.x) * 0.5f, pos.y + (size - fit.y) * 0.5f);
-        dl->AddImage(ToTexId(srv), a, ImVec2(a.x + fit.x, a.y + fit.y), kPreviewUv0, kPreviewUv1,
-                     (isMod && !file.enabled) ? IM_COL32(255, 255, 255, 70) : IM_COL32_WHITE);
+        DrawPreview(dl, srv, info->width, info->height, ImVec2(pos.x + 4, pos.y + 4), ImVec2(size - 8, size - 8),
+                    (isMod && !file.enabled) ? IM_COL32(255, 255, 255, 70) : IM_COL32_WHITE);
     } else {
         const char* msg = info ? "can't preview" : "loading...";
         const ImVec2 ts = ImGui::CalcTextSize(msg);
@@ -500,6 +865,14 @@ void App::DrawCard(const TextureFile& file, bool isMod, float size) {
         dl->AddText(ImVec2(pos.x + size - w - 6, pos.y + 4), IM_COL32(255, 220, 120, 255), "enc");
     }
 
+    if (const TextureKind kind = KindOf(file); kind == TextureKind::Normal || kind == TextureKind::Grayscale) {
+        const char* badge = kKindBadges[int(kind)];
+        const float w = ImGui::CalcTextSize(badge).x;
+        dl->AddRectFilled(ImVec2(pos.x + size - w - 10, pos.y + size - textH - 6), ImVec2(pos.x + size - 2, pos.y + size - 2),
+                          IM_COL32(20, 20, 24, 200), 3.0f);
+        dl->AddText(ImVec2(pos.x + size - w - 6, pos.y + size - textH - 4), kKindColors[int(kind)], badge);
+    }
+
     const ImU32 border = selected ? IM_COL32(90, 160, 255, 255) : hovered ? IM_COL32(120, 120, 130, 255) : 0;
     if (border) dl->AddRect(pos, ImVec2(pos.x + size, pos.y + size), border, 4.0f, 0, selected ? 2.5f : 1.0f);
 
@@ -507,12 +880,18 @@ void App::DrawCard(const TextureFile& file, bool isMod, float size) {
     snprintf(line, sizeof(line), "%u", file.hash);
     dl->PushClipRect(ImVec2(pos.x, pos.y + size), ImVec2(pos.x + size, pos.y + cardSize.y), true);
     dl->AddText(ImVec2(pos.x + 2, pos.y + size + 2), IM_COL32(230, 230, 230, 255), line);
-    if (!file.label.empty())
-        dl->AddText(ImVec2(pos.x + 2, pos.y + size + 2 + textH), IM_COL32(150, 150, 160, 255), file.label.c_str());
+    const ImVec2 line2(pos.x + 2, pos.y + size + 2 + textH);
+    if (settings_.sortKey == "date") {
+        dl->AddText(line2, IM_COL32(150, 150, 160, 255), FormatDate(file.modified).c_str());
+    } else if (settings_.sortKey == "filesize") {
+        dl->AddText(line2, IM_COL32(150, 150, 160, 255), FormatBytes(file.size).c_str());
+    } else if (const std::string& label = DisplayLabel(file); !label.empty())
+        dl->AddText(line2, labels_.Get(file.hash) ? IM_COL32(150, 200, 255, 255) : IM_COL32(150, 150, 160, 255),
+                    label.c_str());
     else if (info && !info->error.empty())
         dl->AddText(ImVec2(pos.x + 2, pos.y + size + 2 + textH), IM_COL32(255, 120, 110, 255), info->error.c_str());
     else if (info) {
-        snprintf(line, sizeof(line), "%ux%u %s", info->width, info->height, FormatName(info->format));
+        snprintf(line, sizeof(line), "%ux%u %s", file.width, file.height, FormatName(file.format));
         dl->AddText(ImVec2(pos.x + 2, pos.y + size + 2 + textH), IM_COL32(150, 150, 160, 255), line);
     }
     dl->PopClipRect();
@@ -527,6 +906,12 @@ void App::DrawCard(const TextureFile& file, bool isMod, float size) {
             if (ImGui::MenuItem("Open in default editor")) OpenWithShell(file.path);
         }
         if (ImGui::MenuItem("Show in Explorer")) ShowInExplorer(file.path);
+        ImGui::Separator();
+        if (ImGui::MenuItem("Edit label")) focusLabel_ = true;
+        const bool isNormal = KindOf(file) == TextureKind::Normal;
+        if (ImGui::MenuItem(isNormal ? "Find its color texture" : "Find its normal map"))
+            OpenSimilar(file, isMod, isNormal ? SimilarMode::Colors : SimilarMode::Normals);
+        if (ImGui::MenuItem("Find similar textures")) OpenSimilar(file, isMod, SimilarMode::Any);
         ImGui::Separator();
         if (ImGui::MenuItem("Move to Recycle Bin"))
             Defer([this, file] { Status(library_.Delete(file), "Moved to Recycle Bin"); });
@@ -549,24 +934,48 @@ void App::DrawDetails() {
     const bool isMod = selection_->isMod;
     const float width = ImGui::GetContentRegionAvail().x;
 
+    // The panel always reserves its scrollbar (see BeginChild), so `width` cannot change
+    // with the preview's height; and the box is capped so the details stay in view.
+    const float box = std::min(width, ImGui::GetWindowHeight() * 0.5f);
+    PreviewTweak& tweak = previewTweaks_[file->hash];
     const TextureInfo* info = nullptr;
     ID3D11ShaderResourceView* srv = thumbs_.Get(file->path, 0, &info);
     if (srv && info) {
-        const ImVec2 fit = Fit(info->width, info->height, width);
-        ImGui::Image(ToTexId(srv), fit, kPreviewUv0, kPreviewUv1);
+        const ImVec2 fit = PreviewSize(info->width, info->height, box, tweak.quarterTurns);
+        const ImVec2 at(ImGui::GetCursorScreenPos().x + (width - fit.x) * 0.5f, ImGui::GetCursorScreenPos().y);
+        ImGui::Dummy(ImVec2(width, fit.y));
+        DrawPreview(ImGui::GetWindowDrawList(), srv, info->width, info->height, at, fit, IM_COL32_WHITE,
+                    tweak.quarterTurns, tweak.mirror);
     } else {
-        ImGui::Dummy(ImVec2(width, width * 0.5f));
+        ImGui::Dummy(ImVec2(width, box));
     }
+
+    // This preview's own orientation, on top of the grid's Rotate/Mirror setting.
+    const float buttonW = (width - ImGui::GetStyle().ItemSpacing.x * 3) / 4;
+    if (ImGui::Button("Rotate left", ImVec2(buttonW, 0))) tweak.quarterTurns = (tweak.quarterTurns + 3) & 3;
+    ImGui::SameLine();
+    if (ImGui::Button("Rotate right", ImVec2(buttonW, 0))) tweak.quarterTurns = (tweak.quarterTurns + 1) & 3;
+    ImGui::SameLine();
+    if (ImGui::Button(tweak.mirror ? "Unmirror" : "Mirror", ImVec2(buttonW, 0))) tweak.mirror = !tweak.mirror;
+    ImGui::SameLine();
+    ImGui::BeginDisabled(tweak.quarterTurns == 0 && !tweak.mirror);
+    if (ImGui::Button("Reset", ImVec2(buttonW, 0))) tweak = {};
+    ImGui::EndDisabled();
+    ImGui::SetItemTooltip("These buttons turn only this preview (remembered per texture while the app is open).\n"
+                          "The Rotate / Mirror options above apply to every preview.");
 
     ImGui::SeparatorText(isMod ? "Mod" : "Original texture");
     ImGui::Text("Hash: %u", file->hash);
-    if (!file->label.empty()) ImGui::Text("Name: %s", file->label.c_str());
+    DrawLabelEditor(*file, width);
+    if (!file->label.empty()) ImGui::Text("File name label: %s", file->label.c_str());
+    ImGui::Text("Type: %s", KindName(KindOf(*file)));
     if (info) {
         if (!info->error.empty()) ImGui::TextColored(kErrorColor, "%s", info->error.c_str());
         else ImGui::Text("%u x %u, %u mip(s), %s", info->width, info->height, info->mipLevels, FormatName(info->format));
         if (info->encrypted) ImGui::TextColored(kAccentColor, "Encrypted (resorep1 pack)");
     }
     ImGui::Text("File size: %s", FormatBytes(file->size).c_str());
+    ImGui::Text("Modified: %s", FormatDate(file->modified).c_str());
     if (isMod) ImGui::Text("Mod / category: %s", file->relDir.empty() ? "(loose)" : WideToUtf8(file->relDir).c_str());
     ImGui::TextColored(kDimColor, "%s", ToUtf8(file->path.filename()).c_str());
     ImGui::Spacing();
@@ -599,9 +1008,13 @@ void App::DrawDetails() {
             if (!active || m.path != *active) continue;
             ImGui::SeparatorText("Replaced by");
             const TextureInfo* modInfo = nullptr;
-            if (ID3D11ShaderResourceView* modSrv = thumbs_.Get(m.path, 256, &modInfo); modSrv && modInfo)
-                ImGui::Image(ToTexId(modSrv), Fit(modInfo->width, modInfo->height, std::min(width, 256.0f)), kPreviewUv0,
-                             kPreviewUv1);
+            if (ID3D11ShaderResourceView* modSrv = thumbs_.Get(m.path, 256, &modInfo); modSrv && modInfo) {
+                const ImVec2 fit = PreviewSize(modInfo->width, modInfo->height, std::min(width, 256.0f));
+                const ImVec2 at = ImGui::GetCursorScreenPos();
+                ImGui::Dummy(fit);
+                DrawPreview(ImGui::GetWindowDrawList(), modSrv, modInfo->width, modInfo->height, at, fit,
+                            IM_COL32_WHITE);
+            }
             ImGui::TextColored(kDimColor, "%s", ToUtf8(m.path.lexically_relative(library_.moddedFolder())).c_str());
             if (ImGui::Button("Go to mod")) {
                 tab_ = Tab::Mods;
@@ -611,6 +1024,115 @@ void App::DrawDetails() {
             break;
         }
     }
+}
+
+void App::DrawLabelEditor(const TextureFile& file, float width) {
+    if (labelEditHash_ != file.hash) {
+        const std::string* current = labels_.Get(file.hash);
+        snprintf(labelEdit_, sizeof(labelEdit_), "%s", current ? current->c_str() : "");
+        labelEditHash_ = file.hash;
+    }
+    if (focusLabel_) {
+        ImGui::SetKeyboardFocusHere();
+        focusLabel_ = false;
+    }
+    ImGui::SetNextItemWidth(width - 70);
+    ImGui::InputTextWithHint("##label", "Label this hash (e.g. Ash helmet)", labelEdit_, sizeof(labelEdit_));
+    if (ImGui::IsItemDeactivatedAfterEdit()) SetLabel(file.hash, labelEdit_);
+    ImGui::SetItemTooltip("Your own name for this texture hash. Saved in labels.txt next to ReResorep.exe;\n"
+                          "applies to the dump and every mod for this hash. Press Enter to save.");
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!labels_.Get(file.hash));
+    if (ImGui::Button("Clear", ImVec2(-1, 0))) {
+        labelEdit_[0] = 0;
+        SetLabel(file.hash, "");
+    }
+    ImGui::EndDisabled();
+}
+
+void App::DrawSimilarWindow() {
+    if (!similar_) return;
+    bool open = true;
+    ImGui::SetNextWindowSize(ImVec2(560, 640), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("Similar textures###similar", &open, ImGuiWindowFlags_NoSavedSettings)) {
+        ImGui::End();
+        if (!open) similar_.reset();
+        return;
+    }
+    SimilarSearch& s = *similar_;
+    const TextureFile& src = s.source;
+
+    // Source header
+    const TextureInfo* info = nullptr;
+    if (ID3D11ShaderResourceView* srv = thumbs_.Get(src.path, 96, &info); srv && info) {
+        const ImVec2 at = ImGui::GetCursorScreenPos();
+        ImGui::Dummy(ImVec2(96, 96));
+        DrawPreview(ImGui::GetWindowDrawList(), srv, info->width, info->height, at, ImVec2(96, 96), IM_COL32_WHITE);
+    } else {
+        ImGui::Dummy(ImVec2(96, 96));
+    }
+    ImGui::SameLine();
+    ImGui::BeginGroup();
+    ImGui::Text("%u", src.hash);
+    if (const std::string& label = DisplayLabel(src); !label.empty()) ImGui::TextColored(kAccentColor, "%s", label.c_str());
+    ImGui::TextColored(kDimColor, "%s, %ux%u", KindName(KindOf(src)), src.width, src.height);
+    static const char* kModes[] = {"Normal maps", "Color textures", "Any kind"};
+    int mode = int(s.mode);
+    ImGui::SetNextItemWidth(160);
+    if (ImGui::Combo("Look for", &mode, kModes, 3)) {
+        s.mode = SimilarMode(mode);
+        ComputeSimilar();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Refresh")) ComputeSimilar();
+    ImGui::EndGroup();
+
+    ImGui::TextWrapped("Ranked by matching detail, same size, and (for dumps) being saved at nearly the same moment, "
+                       "since games load a material's textures together. Check the top results by eye.");
+    if (!s.computed) ImGui::TextColored(kAccentColor, "Analysing this texture...");
+    else if (s.notAnalysed)
+        ImGui::TextColored(kDimColor, "%zu candidate(s) not analysed yet; Refresh later for more results.", s.notAnalysed);
+    ImGui::Separator();
+
+    if (s.computed && s.results.empty()) ImGui::TextColored(kDimColor, "No matching textures found.");
+    ImGui::BeginChild("results");
+    std::optional<SimilarResult> show;
+    for (size_t i = 0; i < s.results.size(); ++i) {
+        const SimilarResult& r = s.results[i];
+        ImGui::PushID(int(i));
+        const ImVec2 at = ImGui::GetCursorScreenPos();
+        ImGui::Dummy(ImVec2(72, 72));
+        const TextureInfo* ri = nullptr;
+        if (ID3D11ShaderResourceView* srv = thumbs_.Get(r.path, 72, &ri); srv && ri)
+            DrawPreview(ImGui::GetWindowDrawList(), srv, ri->width, ri->height, at, ImVec2(72, 72), IM_COL32_WHITE);
+        ImGui::SameLine();
+        ImGui::BeginGroup();
+        ImGui::Text("%u  %s", r.hash, r.isMod ? "(mod)" : "(dump)");
+        const std::string* label = labels_.Get(r.hash);
+        if (label) ImGui::TextColored(kAccentColor, "%s", label->c_str());
+        ImGui::TextColored(kDimColor, "%s, %ux%u", KindName(r.kind), r.width, r.height);
+        ImGui::ProgressBar(r.score, ImVec2(120, 0), (std::to_string(int(r.score * 100)) + "% match").c_str());
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Show")) show = r;
+        const std::string* srcLabel = labels_.Get(src.hash);
+        if (srcLabel && !label) {
+            const std::string suggested =
+                *srcLabel + (r.kind == TextureKind::Normal ? " (normal)" : r.kind == TextureKind::Grayscale ? " (depth)" : "");
+            ImGui::SameLine();
+            if (ImGui::SmallButton(("Label \"" + suggested + "\"").c_str())) SetLabel(r.hash, suggested);
+        }
+        ImGui::EndGroup();
+        ImGui::PopID();
+    }
+    ImGui::EndChild();
+    ImGui::End();
+
+    if (show) {
+        tab_ = show->isMod ? Tab::Mods : Tab::Dumps;
+        modView_ = ModView::All;
+        selection_ = Selection{show->path, show->isMod};
+    }
+    if (!open) similar_.reset();
 }
 
 void App::DrawGames() {
@@ -750,6 +1272,19 @@ void App::DrawSettings() {
                "Writing happens on a background thread so the game does not stall.");
     ImGui::EndDisabled();
 
+    ImGui::SeparatorText("Labels");
+    ImGui::Text("%zu label(s) in %s", labels_.size(), ToUtf8(LabelsFile()).c_str());
+    if (ImGui::Button("Import labels...")) ImportLabels();
+    ImGui::SetItemTooltip("Merges a labels file (lines like 3123456789=Ash helmet; CSV also works).\n"
+                          "Imported labels replace existing labels for the same hash.");
+    ImGui::SameLine();
+    if (ImGui::Button("Export labels...")) ExportLabels();
+    ImGui::SameLine();
+    if (ImGui::Button("Open labels file")) {
+        if (!std::filesystem::exists(LabelsFile())) labels_.Save(LabelsFile());
+        OpenWithShell(LabelsFile());
+    }
+
     ImGui::SeparatorText("Logging");
     changed |= ImGui::Checkbox("Write dll.log in the game folder", &settings_.logEnabled);
     ImGui::BeginDisabled(!settings_.logEnabled);
@@ -821,6 +1356,10 @@ void App::DrawStatusBar() {
                            size_t(std::count_if(library_.mods().begin(), library_.mods().end(),
                                                 [](const TextureFile& f) { return f.enabled; })),
                            library_.dumps().size(), ToUtf8(library_.moddedFolder()).c_str());
+    }
+    if (const size_t pending = analyzer_->Pending()) {
+        ImGui::SameLine();
+        ImGui::TextColored(kAccentColor, "| detecting texture types: %zu left", pending);
     }
 }
 

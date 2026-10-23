@@ -1,20 +1,25 @@
 // Self-contained checks for the core library. Run: build\bin\core_tests.exe
 #include <windows.h>
+#include <crtdbg.h>
 
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <random>
 #include <string>
 #include <vector>
 
 #include "blowfish.h"
 #include "dds.h"
+#include "labels.h"
+#include "mod_package.h"
 #include "mod_state.h"
 #include "resorep_crypto.h"
 #include "resorep_hash.h"
 #include "texture_index.h"
+#include "zip.h"
 
 using namespace resorep;
 
@@ -179,14 +184,217 @@ static void TestCategories() {
     fs::remove_all(root);
 }
 
+static void TestPartialMips() {
+    namespace fs = std::filesystem;
+    wchar_t tmp[MAX_PATH];
+    GetTempPathW(MAX_PATH, tmp);
+    for (DXGI_FORMAT fmt : {DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_BC1_UNORM}) {
+        // 256x128 with a full chain; every mip filled with a distinct byte pattern.
+        const uint32_t w = 256, h = 128;
+        std::vector<std::vector<uint8_t>> levels;
+        std::vector<MipData> mips;
+        for (uint32_t m = 0; (w >> m) || (h >> m); ++m) {
+            SurfaceLayout l;
+            ComputeSurfaceLayout(fmt, w >> m, h >> m, l);
+            std::vector<uint8_t> level(l.size());
+            for (size_t i = 0; i < level.size(); ++i) level[i] = uint8_t(m * 31 + i * 7);
+            levels.push_back(std::move(level));
+        }
+        for (uint32_t m = 0; m < levels.size(); ++m) {
+            SurfaceLayout l;
+            ComputeSurfaceLayout(fmt, w >> m, h >> m, l);
+            mips.push_back({levels[m].data(), l.rowPitch});
+        }
+        const auto dds = WriteDds(fmt, w, h, mips);
+        const uint8_t iv[8] = {1, 1, 2, 3, 5, 8, 13, 21};
+        const auto enc = EncryptTexture(dds.data(), dds.size(), iv);
+        const fs::path plainPath = fs::path(tmp) / L"reresorep_mips_plain.dds";
+        const fs::path encPath = fs::path(tmp) / L"reresorep_mips_enc.dds";
+        std::ofstream(plainPath, std::ios::binary).write(reinterpret_cast<const char*>(dds.data()), dds.size());
+        std::ofstream(encPath, std::ios::binary).write(reinterpret_cast<const char*>(enc.data()), enc.size());
+
+        for (const fs::path& path : {plainPath, encPath}) {
+            DdsImage part;
+            bool encrypted = false;
+            std::string err;
+            CHECK(LoadTextureMips(path.wstring(), 32, part, &encrypted, &err));
+            CHECK(encrypted == (path == encPath));
+            CHECK(part.width == 32 && part.height == 16 && part.format == fmt);  // mip 3
+            CHECK(part.mipLevels == levels.size() - 3);
+            for (uint32_t m = 0; m < part.mipLevels && m + 3 < levels.size(); ++m) {
+                const DdsSubresource& s = part.subresources[m];
+                CHECK(std::memcmp(part.data.data() + s.offset, levels[m + 3].data(), levels[m + 3].size()) == 0);
+            }
+            DdsImage info;
+            CHECK(ReadTextureInfo(path.wstring(), info) && info.width == w && info.height == h);
+        }
+        fs::remove(plainPath);
+        fs::remove(encPath);
+    }
+}
+
+static void TestLabels() {
+    const auto parsed = LabelStore::Parse(
+        "\xEF\xBB\xBF# comment\r\n123=Ash helmet\r\n456,\"Thermite vest\"\n789\tUI icon\n"
+        "notahash=x\n4294967296=too big\n999=\n; other comment\n");
+    CHECK(parsed.size() == 3);
+    if (parsed.size() == 3) {
+        CHECK(parsed[0].first == 123 && parsed[0].second == "Ash helmet");
+        CHECK(parsed[1].first == 456 && parsed[1].second == "Thermite vest");
+        CHECK(parsed[2].first == 789 && parsed[2].second == "UI icon");
+    }
+    LabelStore store;
+    CHECK(store.Merge(parsed, true) == 3);
+    CHECK(store.Merge({{123, "Ash helmet"}, {123, "Other"}}, false) == 0);
+    store.Set(456, "line\nbreak");
+    CHECK(*store.Get(456) == "line break");
+    store.Set(789, "  ");
+    CHECK(!store.Get(789) && store.size() == 2);
+    LabelStore round;
+    round.Merge(LabelStore::Parse(store.Serialize()), true);
+    CHECK(round.size() == 2 && *round.Get(123) == "Ash helmet");
+}
+
+#include "zip_fixture.inc"
+
+static std::vector<uint8_t> Pattern(size_t n, int seed) {
+    std::vector<uint8_t> v(n);
+    for (size_t i = 0; i < n; ++i) v[i] = uint8_t(i * 31 + (i >> 6) * seed);
+    return v;
+}
+
+static void WriteBytes(const std::filesystem::path& p, const std::vector<uint8_t>& d) {
+    std::ofstream(p, std::ios::binary).write(reinterpret_cast<const char*>(d.data()), std::streamsize(d.size()));
+}
+
+static void TestZipFromOtherTool() {
+    namespace fs = std::filesystem;
+    wchar_t tmp[MAX_PATH];
+    GetTempPathW(MAX_PATH, tmp);
+    const fs::path base = fs::path(tmp) / L"reresorep_zip_test";
+    fs::remove_all(base);
+    fs::create_directories(base / L"modded");
+    const fs::path zipPath = base / L"fixture.zip";
+    WriteBytes(zipPath, std::vector<uint8_t>(std::begin(kFixtureZip), std::end(kFixtureZip)));
+
+    {  // Reader + inflate against Python's zipfile output.
+        ZipReader zip;
+        CHECK(zip.Open(zipPath));
+        CHECK(zip.entries().size() == 7);
+        for (const auto& e : zip.entries()) {
+            if (e.name != "Pack/Cat/123.dds") continue;
+            std::vector<uint8_t> data;
+            CHECK(e.method == 8 && zip.Extract(e, data));
+            auto expected = Pattern(20000, 3);
+            expected.insert(expected.begin(), {'D', 'D', 'S', ' '});
+            CHECK(data == expected);
+        }
+    }
+
+    // Import: textures land inside the mod folder; traversal entries and non-textures are refused.
+    const PackageInfo info = InspectModPackage(zipPath);
+    CHECK(info.error.empty() && info.textures == 5 && !info.fromReResorep);
+    LabelStore labels;
+    const PackageResult r = ImportModPackage(zipPath, base / L"modded", "Fixture", false, labels);
+    CHECK(r.error.empty());
+    CHECK(r.textures == 3);
+    CHECK(r.skipped >= 3);  // notes.txt, ../evil.dds, C:/evil2.dds
+    CHECK(fs::exists(base / L"modded/Fixture/Pack/Cat/123.dds"));
+    CHECK(fs::exists(base / L"modded/Fixture/Pack/456~blue.dds"));
+    CHECK(fs::exists(base / L"modded/Fixture/Pack/789.dds"));
+    CHECK(!fs::exists(base / L"modded/Fixture/Pack/notes.txt"));
+    CHECK(!fs::exists(base / L"evil.dds") && !fs::exists(base / L"modded/evil.dds"));
+    fs::remove_all(base);
+}
+
+static void TestModPackageRoundTrip() {
+    namespace fs = std::filesystem;
+    wchar_t tmp[MAX_PATH];
+    GetTempPathW(MAX_PATH, tmp);
+    const fs::path base = fs::path(tmp) / L"reresorep_pkg_test";
+    fs::remove_all(base);
+    const fs::path modded = base / L"modded";
+    for (const wchar_t* d : {L"Ash Elite/Uniform", L"Ash Elite/Weapons", L"Ash Elite/Empty"}) fs::create_directories(modded / d);
+    WriteBytes(modded / L"Ash Elite/Uniform/200.dds", Pattern(5000, 1));
+    WriteBytes(modded / L"Ash Elite/Weapons/300~gun.dds", Pattern(7000, 2));
+    WriteBytes(modded / L"Ash Elite/Weapons/readme.txt", Pattern(10, 0));
+    DisabledSet off;
+    off.Set(L"Ash Elite/Weapons", true);
+    off.Save(modded);
+    LabelStore labels;
+    labels.Set(200, "Ash uniform");
+    labels.Set(300, "Ash gun");
+    labels.Set(999, "Not in this mod");
+
+    const fs::path full = base / L"full.zip";
+    PackageResult ex = ExportModPackage(modded, L"Ash Elite", full, {true, true}, labels);
+    CHECK(ex.error.empty() && ex.textures == 2 && ex.labels == 2);
+
+    // Import under a new name into a fresh library with one label of its own.
+    const fs::path other = base / L"other";
+    fs::create_directories(other);
+    LabelStore mine;
+    mine.Set(200, "My own name");
+    PackageInfo info = InspectModPackage(full);
+    CHECK(info.fromReResorep && info.name == "Ash Elite" && info.textures == 2 && info.labels == 2);
+    PackageResult im = ImportModPackage(full, other, "Ash Copy", false, mine);
+    CHECK(im.error.empty() && im.textures == 2);
+    CHECK(fs::exists(other / L"Ash Copy/Uniform/200.dds") && fs::exists(other / L"Ash Copy/Weapons/300~gun.dds"));
+    CHECK(fs::is_directory(other / L"Ash Copy/Empty"));  // empty categories survive
+    CHECK(!fs::exists(other / L"Ash Copy/Weapons/readme.txt"));
+    CHECK(im.labels == 1 && *mine.Get(200) == "My own name" && *mine.Get(300) == "Ash gun");
+    DisabledSet state;
+    state.Load(other);
+    CHECK(state.IsDisabled(L"Ash Copy/Weapons") && !state.IsDisabled(L"Ash Copy/Uniform"));
+    {
+        auto read = [](const fs::path& p) {
+            std::ifstream in(p, std::ios::binary);
+            return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        };
+        const std::string original = read(modded / L"Ash Elite/Weapons/300~gun.dds");
+        CHECK(!original.empty() && original == read(other / L"Ash Copy/Weapons/300~gun.dds"));
+    }
+
+    // Importing again without overwrite keeps existing files.
+    PackageResult again = ImportModPackage(full, other, "Ash Copy", false, mine);
+    CHECK(again.error.empty() && again.textures == 0 && again.skipped >= 2);
+
+    // Only what is turned on.
+    const fs::path onOnly = base / L"on.zip";
+    ex = ExportModPackage(modded, L"Ash Elite", onOnly, {false, false}, labels);
+    CHECK(ex.error.empty() && ex.textures == 1 && ex.labels == 0);
+    fs::remove_all(base);
+}
+
 int main() {
-    TestBlowfishEcb();
-    TestBlowfishCbc();
-    TestHash();
-    TestContainer();
-    TestFileNames();
-    TestDdsRoundTrip();
-    TestCategories();
+    setvbuf(stdout, nullptr, _IONBF, 0);  // keep output if a test crashes
+    // Debug-CRT assertions go to stderr instead of a dialog nobody sees in CI.
+    _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
+    _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
+    _CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE);
+    _CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
+    struct { const char* name; void (*run)(); } tests[] = {
+        {"TestBlowfishEcb", TestBlowfishEcb},
+        {"TestBlowfishCbc", TestBlowfishCbc},
+        {"TestHash", TestHash},
+        {"TestContainer", TestContainer},
+        {"TestFileNames", TestFileNames},
+        {"TestDdsRoundTrip", TestDdsRoundTrip},
+        {"TestCategories", TestCategories},
+        {"TestPartialMips", TestPartialMips},
+        {"TestLabels", TestLabels},
+        {"TestZipFromOtherTool", TestZipFromOtherTool},
+        {"TestModPackageRoundTrip", TestModPackageRoundTrip},
+    };
+    for (const auto& t : tests) {
+        std::printf("%s\n", t.name);
+        try {
+            t.run();
+        } catch (const std::exception& e) {
+            std::printf("FAIL %s threw: %s\n", t.name, e.what());
+            ++g_failures;
+        }
+    }
     std::printf(g_failures ? "%d check(s) failed\n" : "all checks passed\n", g_failures);
     return g_failures ? 1 : 0;
 }

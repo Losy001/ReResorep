@@ -64,6 +64,27 @@ std::optional<fs::path> PickFolder(HWND owner, const wchar_t* title) {
     return result;
 }
 
+std::optional<fs::path> PickSaveFile(HWND owner, const wchar_t* title, const wchar_t* defaultName,
+                                     const std::vector<FileFilter>& filters, const wchar_t* defaultExtension) {
+    ComPtr<IFileSaveDialog> dlg;
+    if (FAILED(CoCreateInstance(CLSID_FileSaveDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dlg))))
+        return std::nullopt;
+    std::vector<COMDLG_FILTERSPEC> specs;
+    for (const auto& f : filters) specs.push_back({f.name, f.spec});
+    if (!specs.empty()) dlg->SetFileTypes(UINT(specs.size()), specs.data());
+    dlg->SetTitle(title);
+    dlg->SetFileName(defaultName);
+    dlg->SetDefaultExtension(defaultExtension);
+    ComPtr<IShellItem> item;
+    PWSTR path = nullptr;
+    if (FAILED(dlg->Show(owner)) || FAILED(dlg->GetResult(&item)) ||
+        FAILED(item->GetDisplayName(SIGDN_FILESYSPATH, &path)))
+        return std::nullopt;
+    fs::path result(path);
+    CoTaskMemFree(path);
+    return result;
+}
+
 bool MoveToRecycleBin(const fs::path& path) {
     std::wstring from = path.wstring();
     from.push_back(L'\0');  // SHFileOperation wants a double-null-terminated list

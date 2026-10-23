@@ -17,6 +17,9 @@ struct FileFilter {
 std::vector<std::filesystem::path> PickFiles(HWND owner, const wchar_t* title, const std::vector<FileFilter>& filters,
                                              bool multiple);
 std::optional<std::filesystem::path> PickFolder(HWND owner, const wchar_t* title);
+std::optional<std::filesystem::path> PickSaveFile(HWND owner, const wchar_t* title, const wchar_t* defaultName,
+                                                  const std::vector<FileFilter>& filters,
+                                                  const wchar_t* defaultExtension = L"txt");
 
 bool MoveToRecycleBin(const std::filesystem::path& path);
 void ShowInExplorer(const std::filesystem::path& path);

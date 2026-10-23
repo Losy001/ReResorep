@@ -7,6 +7,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include <dxgiformat.h>
+
 #include "mod_state.h"
 
 namespace resorep::ui {
@@ -19,6 +21,10 @@ struct TextureFile {
     bool selfDisabled = false;  // switched off on its own
     bool enabled = true;        // on, and no folder above it is off
     uint64_t size = 0;
+    int64_t modified = 0;  // last write time, file_time ticks
+    // From the DDS header (0 / UNKNOWN if it could not be read).
+    uint32_t width = 0, height = 0;
+    DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
 };
 
 // A mod (top-level folder of modded/) or a category inside one (any deeper folder).
@@ -62,6 +68,7 @@ public:
     std::filesystem::path TargetPath(uint32_t hash, const std::string& label, const std::wstring& relDir = {}) const;
 
 private:
+    TextureFile MakeFile(const std::filesystem::directory_entry& entry, uint32_t hash);
     void Watch();
     void CloseWatches();
     std::string SaveState();
@@ -71,6 +78,14 @@ private:
     std::vector<TextureFile> mods_, dumps_;
     std::vector<ModFolder> folders_;
     std::unordered_map<uint32_t, std::filesystem::path> active_;
+    // Header info per file, reused while its size and timestamp are unchanged.
+    struct CachedInfo {
+        int64_t modified;
+        uint64_t size;
+        uint32_t width, height;
+        DXGI_FORMAT format;
+    };
+    std::unordered_map<std::wstring, CachedInfo> infoCache_;
     HANDLE watches_[2] = {INVALID_HANDLE_VALUE, INVALID_HANDLE_VALUE};
 };
 
