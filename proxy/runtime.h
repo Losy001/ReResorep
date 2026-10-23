@@ -40,6 +40,7 @@ private:
     Runtime() = default;
     void LoadConfig();
     void Rescan();
+    void SyncDumpsWithDisk();  // "already dumped" = what is in the dump folder (plus pending writes)
     void WatchThread();
     void DumpThread();
 

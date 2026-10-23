@@ -48,7 +48,8 @@ struct Runtime::DumpState {
     std::condition_variable wake;
     std::deque<Job> jobs;
     size_t pendingBytes = 0;
-    std::unordered_set<uint32_t> seen;  // hashes already dumped or queued
+    std::unordered_set<uint32_t> seen;      // hashes on disk, queued or being written: not dumped again
+    std::unordered_set<uint32_t> inFlight;  // queued or being written, not on disk yet
 };
 
 fs::path ModuleDirectory() {
@@ -103,14 +104,21 @@ void Runtime::LoadConfig() {
     if (cfg->logEnabled) logFile_ = _wfsopen(cfg->logFile.c_str(), L"a", _SH_DENYWR);
     LeaveCriticalSection(&logLock_);
 
-    if (cfg->dumpTextures) {
-        // Remember what is already on disk so we never re-dump it.
-        TextureIndex existing;
-        existing.Scan(cfg->originalFolder);
-        std::lock_guard lock(dump_->mutex);
-        for (const auto& [hash, path] : existing.files()) dump_->seen.insert(hash);
-    }
     config_.store(std::move(cfg), std::memory_order_release);
+    SyncDumpsWithDisk();
+}
+
+void Runtime::SyncDumpsWithDisk() {
+    // What is on disk is not dumped again; a dump that was deleted is, the next time the game
+    // creates that texture (the original Resorep got the same by listing the folder on every
+    // texture creation).
+    const auto cfg = config();
+    if (!cfg->dumpTextures) return;
+    TextureIndex onDisk;
+    onDisk.Scan(cfg->originalFolder);
+    std::lock_guard lock(dump_->mutex);
+    dump_->seen = dump_->inFlight;
+    for (const auto& [hash, path] : onDisk.files()) dump_->seen.insert(hash);
 }
 
 void Runtime::Rescan() {
@@ -120,35 +128,50 @@ void Runtime::Rescan() {
 }
 
 void Runtime::WatchThread() {
-    // Picks up mods added/removed/disabled from the manager and settings changes
-    // without restarting the game. Textures already created keep their old data.
+    // Picks up mods added/removed/disabled from the manager, settings changes and deleted
+    // dumps without restarting the game. Textures already created keep their old data.
+    enum Watch { kSettings, kModded, kOriginal };
     for (;;) {
         const fs::path modded = config()->moddedFolder;
-        HANDLE handles[2] = {
+        const fs::path original = config()->originalFolder;
+        HANDLE handles[3] = {
             FindFirstChangeNotificationW(ModuleDirectory().c_str(), FALSE,
                                          FILE_NOTIFY_CHANGE_LAST_WRITE | FILE_NOTIFY_CHANGE_FILE_NAME),
             // Whole tree: mod/category folders, and reresorep_disabled.ini when categories are toggled.
             FindFirstChangeNotificationW(modded.c_str(), TRUE,
                                          FILE_NOTIFY_CHANGE_LAST_WRITE | FILE_NOTIFY_CHANGE_FILE_NAME |
                                              FILE_NOTIFY_CHANGE_DIR_NAME),
+            // Dumps added or deleted (by the manager's "Delete all dumps", or by hand).
+            FindFirstChangeNotificationW(original.c_str(), FALSE, FILE_NOTIFY_CHANGE_FILE_NAME),
         };
-        const DWORD count = handles[1] == INVALID_HANDLE_VALUE ? 1 : 2;
-        if (handles[0] == INVALID_HANDLE_VALUE) return;
+        if (handles[kSettings] == INVALID_HANDLE_VALUE) return;
+        HANDLE waits[3];
+        Watch kinds[3];
+        DWORD count = 0;
+        for (int w = 0; w < 3; ++w) {
+            if (handles[w] == INVALID_HANDLE_VALUE) continue;
+            waits[count] = handles[w];
+            kinds[count++] = Watch(w);
+        }
 
         bool restart = false;
         while (!restart) {
-            // Without a modded folder, poll every 2 s until it appears.
-            const DWORD r = WaitForMultipleObjects(count, handles, FALSE, count == 1 ? 2000 : INFINITE);
+            // A folder that doesn't exist yet is polled every 2 s until it appears.
+            const DWORD r = WaitForMultipleObjects(count, waits, FALSE, count < 3 ? 2000 : INFINITE);
             if (r == WAIT_TIMEOUT) {
-                restart = fs::exists(modded);
-                if (restart) Rescan();
+                restart = (handles[kModded] == INVALID_HANDLE_VALUE && fs::exists(modded)) ||
+                          (handles[kOriginal] == INVALID_HANDLE_VALUE && fs::exists(original));
+                if (restart) {
+                    Rescan();
+                    SyncDumpsWithDisk();
+                }
                 continue;
             }
             const DWORD which = r - WAIT_OBJECT_0;
             if (which >= count) return;
             Sleep(250);  // let a burst of file operations finish
-            FindNextChangeNotification(handles[which]);
-            if (which == 0) {
+            FindNextChangeNotification(waits[which]);
+            if (kinds[which] == kSettings) {
                 // The game folder changes for many reasons (our own dll.log included);
                 // only a new dllsettings.ini matters.
                 std::error_code ec;
@@ -157,14 +180,18 @@ void Runtime::WatchThread() {
                 settingsStamp_ = stamp;
                 LoadConfig();
                 Rescan();
-                restart = config()->moddedFolder != modded;
+                restart = config()->moddedFolder != modded || config()->originalFolder != original;
                 Log(false, "Settings reloaded");
-            } else {
+            } else if (kinds[which] == kModded) {
                 Rescan();
                 Log(true, "Modded folder changed; %zu textures indexed", index()->size());
+            } else {
+                SyncDumpsWithDisk();
+                Log(true, "Dump folder changed; deleted dumps will be dumped again");
             }
         }
-        for (DWORD i = 0; i < count; ++i) FindCloseChangeNotification(handles[i]);
+        for (HANDLE h : handles)
+            if (h != INVALID_HANDLE_VALUE) FindCloseChangeNotification(h);
     }
 }
 
@@ -185,6 +212,7 @@ void Runtime::QueueDump(uint32_t hash, const D3D11_TEXTURE2D_DESC& desc, const D
         std::lock_guard lock(dump_->mutex);
         if (dump_->pendingBytes + job.bytes > kMaxPendingDumpBytes) return;
         if (!dump_->seen.insert(hash).second) return;
+        dump_->inFlight.insert(hash);
         dump_->pendingBytes += job.bytes;
     }
     // Copy outside the lock; the game frees its buffer after CreateTexture2D returns.
@@ -227,6 +255,7 @@ void Runtime::DumpThread() {
 
         std::lock_guard lock(dump_->mutex);
         dump_->pendingBytes -= job.bytes;
+        dump_->inFlight.erase(job.hash);
     }
 }
 

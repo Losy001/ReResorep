@@ -151,6 +151,19 @@ int main(int argc, char** argv) {
         CHECK(resorep::ComputeTextureHash(img.data.data() + img.subresources[0].offset, img.subresources[0].slicePitch) ==
               untouched.hash);
 
+    // Not dumped twice while the file exists...
+    const auto firstWrite = fs::last_write_time(dumped);
+    Sleep(1500);
+    CreateAndGetWidth(dev.Get(), untouched);
+    Sleep(500);
+    CHECK(fs::last_write_time(dumped) == firstWrite);
+    // ...but deleted while the game runs, it is dumped again the next time the game loads it.
+    fs::remove(dumped);
+    Sleep(1500);
+    CreateAndGetWidth(dev.Get(), untouched);
+    for (int i = 0; i < 40 && !fs::exists(dumped); ++i) Sleep(50);
+    CHECK(fs::exists(dumped));
+
     std::printf(g_failures ? "%d check(s) failed (log: %ls)\n" : "all proxy checks passed\n", g_failures,
                 (dir / L"dll.log").c_str());
     return g_failures ? 1 : 0;
