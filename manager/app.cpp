@@ -1532,20 +1532,35 @@ void App::DrawGames() {
         ImGui::TextColored(kDimColor, "No games yet. Add the game's .exe; the proxy d3d11.dll goes next to it.");
         return;
     }
-    if (!ImGui::BeginTable("games", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_SizingStretchProp))
-        return;
-    // Status is as wide as its text; the buttons share the rest with the game path and wrap
-    // onto another line when the window is too narrow for one row of them.
-    ImGui::TableSetupColumn("Game", ImGuiTableColumnFlags_WidthStretch, 1.0f);
+    // One line per game: name and folder, status, then the buttons, all centred on the buttons'
+    // height. The buttons column is as wide as one row of buttons (at most half the window, so
+    // they wrap on narrow windows); the folder path is what gets cut short.
+    const ImGuiStyle& style = ImGui::GetStyle();
+    float buttonsWidth = 0;
+    for (const char* label : {"Start", "Closing...", "Reinstall", "Uninstall", "Open folder", "Remove"})
+        buttonsWidth += ImGui::CalcTextSize(label).x + style.FramePadding.x * 2 + style.ItemSpacing.x;
+    buttonsWidth = std::min(buttonsWidth - style.ItemSpacing.x, ImGui::GetContentRegionAvail().x * 0.5f);
+    ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(style.CellPadding.x * 2, 6.0f));
+    const bool table = ImGui::BeginTable("games", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH);
+    ImGui::PopStyleVar();
+    if (!table) return;
+    ImGui::TableSetupColumn("Game", ImGuiTableColumnFlags_WidthStretch);
     ImGui::TableSetupColumn("Status", ImGuiTableColumnFlags_WidthFixed);
-    ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthStretch, 1.0f);
+    ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, buttonsWidth);
     ImGui::TableHeadersRow();
     // Puts the next button beside the last one if it fits in the column, else on a new line.
     auto flow = [](const char* nextLabel) {
-        const ImGuiStyle& style = ImGui::GetStyle();
-        const float next = ImGui::CalcTextSize(nextLabel, nullptr, true).x + style.FramePadding.x * 2;
+        const ImGuiStyle& st = ImGui::GetStyle();
+        const float next = ImGui::CalcTextSize(nextLabel, nullptr, true).x + st.FramePadding.x * 2;
         const float right = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
-        if (ImGui::GetItemRectMax().x + style.ItemSpacing.x + next <= right) ImGui::SameLine();
+        if (ImGui::GetItemRectMax().x + st.ItemSpacing.x + next <= right) ImGui::SameLine();
+    };
+    // "A  ·  B" pieces on one line.
+    auto part = [](const ImVec4& c, const char* text) {
+        ImGui::SameLine(0, 0);
+        ImGui::TextColored(kDimColor, "  \xC2\xB7  ");
+        ImGui::SameLine(0, 0);
+        ImGui::TextColored(c, "%s", text);
     };
 
     std::optional<size_t> remove;
@@ -1555,9 +1570,12 @@ void App::DrawGames() {
         ImGui::PushID(int(i));
         ImGui::TableNextRow();
         ImGui::TableNextColumn();
-        ImGui::AlignTextToFramePadding();  // first lines line up with the buttons' labels
+        ImGui::AlignTextToFramePadding();
         ImGui::TextUnformatted(ToUtf8(g.exe.filename()).c_str());
-        ImGui::TextColored(kDimColor, "%s", ToUtf8(g.exe.parent_path()).c_str());
+        ImGui::SameLine(0, 12);
+        const std::string folder = ToUtf8(g.exe.parent_path());
+        ImGui::TextColored(kDimColor, "%s", folder.c_str());
+        ImGui::SetItemTooltip("%s", folder.c_str());
 
         ImGui::TableNextColumn();
         const ImVec4 color = g.status == ProxyStatus::Installed ? kOkColor
@@ -1565,19 +1583,24 @@ void App::DrawGames() {
                                                                      : ImVec4(1.0f, 0.75f, 0.3f, 1.0f);
         ImGui::AlignTextToFramePadding();
         ImGui::TextColored(color, "%s", StatusText(g.status));
-        if (running) ImGui::TextColored(kOkColor, "Running");
+        if (running) part(kOkColor, "Running");
         if (!g.proxyVersion.empty()) {
-            ImGui::TextColored(kDimColor, "proxy %s", g.proxyVersion.c_str());
+            part(kDimColor, ("proxy " + g.proxyVersion).c_str());
             if (g.status == ProxyStatus::Outdated)
                 ImGui::SetItemTooltip("This ReResorep has proxy %s. Click Update to install it.", RERESOREP_VERSION_STRING);
         }
         if (g.chainsOtherD3D11) {
-            ImGui::TextColored(kDimColor, "chains ori_d3d11.dll");
+            part(kDimColor, "+ ori_d3d11.dll");
             ImGui::SetItemTooltip("Another d3d11.dll (for example ReShade) was kept as ori_d3d11.dll and still loads.");
         }
 
         ImGui::TableNextColumn();
         const bool installed = g.status == ProxyStatus::Installed;
+        const char* installLabel = installed                                  ? "Reinstall"
+                                   : g.status == ProxyStatus::NotInstalled ? "Install"
+                                                                           : "Update";
+        const bool closingThis = closeJob_.valid() && closingExe_ == g.exe;
+        const char* closeLabel = closingThis ? "Closing...###close" : "Close###close";
         if (g.status != ProxyStatus::Missing) {
             ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18f, 0.48f, 0.26f, 1.0f));
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.22f, 0.60f, 0.32f, 1.0f));
@@ -1595,8 +1618,6 @@ void App::DrawGames() {
                                   : installed ? "Launch the game with your mods"
                                               : "Launch the game (install ReResorep first for mods to apply)");
 
-            const bool closingThis = closeJob_.valid() && closingExe_ == g.exe;
-            const char* closeLabel = closingThis ? "Closing...###close" : "Close###close";
             flow(closeLabel);
             ImGui::BeginDisabled(!running || closeJob_.valid());
             ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.55f, 0.18f, 0.18f, 1.0f));
@@ -1614,9 +1635,6 @@ void App::DrawGames() {
                                   "forcefully (unsaved progress in the game is lost).",
                                   unsigned(kCloseGraceMs / 1000));
             // These rebuild games_, so they run after the table is drawn.
-            const char* installLabel = installed                                  ? "Reinstall"
-                                       : g.status == ProxyStatus::NotInstalled ? "Install"
-                                                                               : "Update";
             flow(installLabel);
             if (ImGui::Button(installLabel)) {
                 Defer([this, exe = g.exe] {
