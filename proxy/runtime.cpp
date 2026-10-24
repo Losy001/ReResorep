@@ -50,6 +50,10 @@ struct Runtime::DumpState {
     size_t pendingBytes = 0;
     std::unordered_set<uint32_t> seen;      // hashes on disk, queued or being written: not dumped again
     std::unordered_set<uint32_t> inFlight;  // queued or being written, not on disk yet
+    // After a redump request, files on disk from before it no longer count as dumped;
+    // only what was written since (and is still there) does.
+    bool redumping = false;
+    std::unordered_set<uint32_t> redumped;
 };
 
 fs::path ModuleDirectory() {
@@ -76,6 +80,7 @@ void Runtime::EnsureStarted() {
         dump_ = new DumpState();
         std::error_code ec;
         settingsStamp_ = fs::last_write_time(ModuleDirectory() / kDllSettingsFile, ec);
+        fs::remove(ModuleDirectory() / kRedumpRequestFile, ec);  // left from a session that ended first
         LoadConfig();
         Rescan();
         std::thread([this] { WatchThread(); }).detach();
@@ -118,7 +123,20 @@ void Runtime::SyncDumpsWithDisk() {
     onDisk.Scan(cfg->originalFolder);
     std::lock_guard lock(dump_->mutex);
     dump_->seen = dump_->inFlight;
-    for (const auto& [hash, path] : onDisk.files()) dump_->seen.insert(hash);
+    for (const auto& [hash, path] : onDisk.files())
+        if (!dump_->redumping || dump_->redumped.count(hash)) dump_->seen.insert(hash);
+}
+
+void Runtime::StartRedump() {
+    if (!config()->dumpTextures) {
+        Log(false, "Redump requested, but dumping is off");
+        return;
+    }
+    std::lock_guard lock(dump_->mutex);
+    dump_->redumping = true;
+    dump_->redumped.clear();
+    dump_->seen = dump_->inFlight;
+    Log(false, "Redump requested; textures are dumped again as the game loads them");
 }
 
 void Runtime::Rescan() {
@@ -173,8 +191,9 @@ void Runtime::WatchThread() {
             FindNextChangeNotification(waits[which]);
             if (kinds[which] == kSettings) {
                 // The game folder changes for many reasons (our own dll.log included);
-                // only a new dllsettings.ini matters.
+                // only a redump request or a new dllsettings.ini matters.
                 std::error_code ec;
+                if (fs::remove(ModuleDirectory() / kRedumpRequestFile, ec)) StartRedump();
                 const auto stamp = fs::last_write_time(ModuleDirectory() / kDllSettingsFile, ec);
                 if (ec || stamp == settingsStamp_) continue;
                 settingsStamp_ = stamp;
@@ -256,6 +275,7 @@ void Runtime::DumpThread() {
         std::lock_guard lock(dump_->mutex);
         dump_->pendingBytes -= job.bytes;
         dump_->inFlight.erase(job.hash);
+        if (dump_->redumping && out) dump_->redumped.insert(job.hash);
     }
 }
 

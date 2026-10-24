@@ -40,6 +40,9 @@ inline constexpr char kLogLevel[] = "dll_log_level";
 }  // namespace keys
 
 inline constexpr wchar_t kDllSettingsFile[] = L"dllsettings.ini";
+// Dropped next to the proxy by the manager's Redump button: the running game dumps every
+// texture again (overwriting) as it loads it. The proxy deletes it once seen.
+inline constexpr wchar_t kRedumpRequestFile[] = L"reresorep_redump.request";
 
 std::wstring Utf8ToWide(const std::string& s);
 std::string WideToUtf8(const std::wstring& s);

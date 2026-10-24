@@ -164,6 +164,21 @@ int main(int argc, char** argv) {
     for (int i = 0; i < 40 && !fs::exists(dumped); ++i) Sleep(50);
     CHECK(fs::exists(dumped));
 
+    // A redump request (the manager's Redump button) rewrites dumps that already exist, once.
+    Sleep(1500);
+    const auto beforeRedump = fs::last_write_time(dumped);
+    std::ofstream(dir / L"reresorep_redump.request").close();
+    for (int i = 0; i < 40 && fs::exists(dir / L"reresorep_redump.request"); ++i) Sleep(50);
+    CHECK(!fs::exists(dir / L"reresorep_redump.request"));  // the proxy takes the request
+    CreateAndGetWidth(dev.Get(), untouched);
+    for (int i = 0; i < 40 && fs::last_write_time(dumped) == beforeRedump; ++i) Sleep(50);
+    const auto redumpedAt = fs::last_write_time(dumped);
+    CHECK(redumpedAt != beforeRedump);
+    Sleep(1500);
+    CreateAndGetWidth(dev.Get(), untouched);
+    Sleep(500);
+    CHECK(fs::last_write_time(dumped) == redumpedAt);
+
     std::printf(g_failures ? "%d check(s) failed (log: %ls)\n" : "all proxy checks passed\n", g_failures,
                 (dir / L"dll.log").c_str());
     return g_failures ? 1 : 0;

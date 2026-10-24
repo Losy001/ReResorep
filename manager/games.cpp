@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <fstream>
 #include <system_error>
 
 #include "theme.h"
@@ -137,6 +138,11 @@ std::string WriteGameSettings(const fs::path& exe, const ManagerSettings& s) {
     ini.Set(keys::kLogFile, WideToUtf8((exe.parent_path() / L"dll.log").wstring()));
     ini.Set(keys::kLogLevel, s.logDebug ? "debug" : "info");
     return ini.Save(exe.parent_path() / kDllSettingsFile) ? std::string() : "Could not write dllsettings.ini";
+}
+
+std::string RequestRedump(const fs::path& exe) {
+    std::ofstream out(exe.parent_path() / kRedumpRequestFile, std::ios::binary | std::ios::trunc);
+    return out ? std::string() : "Could not write to the game folder";
 }
 
 std::string InstallProxy(const fs::path& exe, const ManagerSettings& settings) {

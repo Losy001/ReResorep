@@ -58,5 +58,7 @@ GameState InspectGame(const std::filesystem::path& exe);
 std::string InstallProxy(const std::filesystem::path& exe, const ManagerSettings& settings);
 std::string UninstallProxy(const std::filesystem::path& exe);
 std::string WriteGameSettings(const std::filesystem::path& exe, const ManagerSettings& settings);
+// Asks the proxy in a running game to dump every texture again as the game loads it.
+std::string RequestRedump(const std::filesystem::path& exe);
 
 }  // namespace resorep::ui

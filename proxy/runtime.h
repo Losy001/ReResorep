@@ -41,6 +41,7 @@ private:
     void LoadConfig();
     void Rescan();
     void SyncDumpsWithDisk();  // "already dumped" = what is in the dump folder (plus pending writes)
+    void StartRedump();        // from now on, dump every texture again as the game loads it
     void WatchThread();
     void DumpThread();
 

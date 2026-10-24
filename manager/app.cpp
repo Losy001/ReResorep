@@ -864,6 +864,12 @@ void App::DrawToolbarDumps() {
         ImGui::TextColored(kDimColor, "Dumping is off - enable it in Settings.");
     }
     ImGui::SameLine();
+    ImGui::BeginDisabled(!settings_.modCreatorMode || !settings_.saveTextures);
+    if (ImGui::Button("Redump")) Redump();
+    ImGui::EndDisabled();
+    ImGui::SetItemTooltip("Makes a running game dump every texture again, overwriting the files here, as it\n"
+                          "loads it. Textures the game already has loaded come in on the next map or menu.");
+    ImGui::SameLine();
     const bool deleting = deleteDumpsJob_.valid();
     ImGui::BeginDisabled(deleting || library_.dumps().empty());
     ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.55f, 0.18f, 0.18f, 1.0f));
@@ -877,6 +883,23 @@ void App::DrawToolbarDumps() {
     ImGui::PopStyleColor(3);
     ImGui::EndDisabled();
     DrawViewOptions(false);
+}
+
+void App::Redump() {
+    std::string sent, error;
+    bool outdated = false;
+    for (const GameState& g : games_) {
+        if (FindProcesses(g.exe).empty()) continue;
+        if (g.status == ProxyStatus::Outdated) outdated = true;  // an older proxy ignores the request
+        if (g.status != ProxyStatus::Installed) continue;
+        const std::string e = RequestRedump(g.exe);
+        if (!e.empty()) error = ToUtf8(g.exe.filename()) + ": " + e;
+        else sent += (sent.empty() ? "" : ", ") + ToUtf8(g.exe.filename());
+    }
+    if (error.empty() && sent.empty())
+        error = outdated ? "The running game has an older proxy - update it on the Games tab, then restart the game."
+                         : "Start the game first (with the proxy installed).";
+    Status(error, "Redump requested for " + sent + ": textures are dumped again as the game loads them");
 }
 
 void App::DrawDeleteDumpsPopup() {

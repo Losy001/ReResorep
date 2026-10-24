@@ -20,6 +20,8 @@ Existing Resorep texture packs keep working unchanged. That includes `<hash>.dds
    imported directly; for any others you're asked which hash they replace.
 4. To find hashes, open **Settings** and turn on *Mod creator mode* and *Dump textures*, then play.
    The **Dumps** tab fills with the game's textures. Select one and choose *Replace with .dds…*.
+   A texture already in the folder is not dumped again; **Redump** makes a running game
+   dump (and overwrite) every texture again as it loads it.
 
 ### Finding your way around big dump folders
 

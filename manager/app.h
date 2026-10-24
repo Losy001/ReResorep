@@ -72,6 +72,7 @@ private:
     void DrawImportPopup();
     void DrawStatusBar();
     void DrawDeleteDumpsPopup();
+    void Redump();
     void DrawSimilarWindow();
     void DrawLabelEditor(const TextureFile& file, float width);
 
