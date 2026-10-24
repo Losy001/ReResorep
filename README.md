@@ -201,7 +201,7 @@ release. Packaging a Debug build is refused.
 
 ## Version and credits
 
-The version is set once, in `CMakeLists.txt` (`project(... VERSION 2.2.0)`). From there it goes
+The version is set once, in `CMakeLists.txt` (`project(... VERSION 2.3.0)`). From there it goes
 into:
 
 - the window title,
