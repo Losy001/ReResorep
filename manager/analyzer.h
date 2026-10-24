@@ -29,8 +29,8 @@ struct TextureTraits {
     // Colour texture in Siege's Black Ice skin palette: icy cyan with white highlights and
     // dark cracks. The size check (power-of-two weapon sheets) is up to the caller.
     bool icy = false;
-    // 16x16 "where is the detail" map: luminance edges for colour/grayscale textures,
-    // surface tilt for normal maps. A texture and its normal map line up here.
+    // 16x16 "where is the detail" map: colour edges for colour/grayscale textures, surface
+    // tilt for normal maps. A texture and its normal map line up here.
     std::array<uint8_t, 256> detail{};
 };
 

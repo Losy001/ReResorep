@@ -20,7 +20,7 @@ namespace {
 constexpr int kSample = 32;   // GPU sample size
 constexpr int kDetail = 16;   // fingerprint size
 constexpr uint32_t kLoadMax = 64;  // largest mip read from disk for analysis
-constexpr char kCacheMagic[4] = {'R', 'R', 'A', '7'};  // bump when classification changes
+constexpr char kCacheMagic[4] = {'R', 'R', 'A', '8'};  // bump when classification changes
 
 }  // namespace
 
@@ -76,13 +76,14 @@ TextureTraits AnalyzePixels(const float* rgba, DXGI_FORMAT format) {
     for (float& v : px) v = std::clamp(snorm ? (v + 1.0f) * 0.5f : v, 0.0f, 1.0f);
 
     TextureTraits t;
-    std::vector<float> detail(n);  // per-pixel value whose structure we fingerprint
+    std::vector<float> detail(n * 3);  // up to 3 values per pixel whose edges we fingerprint
+    int planes = 1;
     bool detailIsSlope = false;
 
     if (channels == 1) {
         t.kind = TextureKind::Grayscale;
         const int c = format == DXGI_FORMAT_A8_UNORM ? 3 : 0;
-        for (int i = 0; i < n; ++i) detail[i] = px[i * 4 + c];
+        for (int i = 0; i < n; ++i) detail[i * 3] = px[i * 4 + c];
     } else {
         int unitVectors = 0, transparent = 0, blueFull = 0, redEmpty = 0, flat = 0, primary = 0;
         double meanX = 0, meanY = 0, meanB = 0, blueLift = 0;
@@ -131,32 +132,34 @@ TextureTraits AnalyzePixels(const float* rgba, DXGI_FORMAT format) {
         // (depth, roughness, masks) in single-channel formats such as BC4, handled above.
         else t.kind = TextureKind::Color;
 
-        for (int i = 0; i < n; ++i) {
-            const float r = px[i * 4], g = px[i * 4 + 1], b = px[i * 4 + 2];
-            if (t.kind == TextureKind::Normal) {
-                const float x = r * 2 - 1, y = g * 2 - 1;
-                detail[i] = std::sqrt(x * x + y * y);  // how far the surface tilts
-            } else {
-                detail[i] = 0.299f * r + 0.587f * g + 0.114f * b;
-            }
-        }
+        // Colour: edges in each of R, G, B (on ~800 colour/normal pairs from Siege dumps this
+        // matched normal maps better than luminance edges did). Normal maps: below.
+        planes = 3;
+        for (int i = 0; i < n; ++i)
+            for (int c = 0; c < planes; ++c) detail[i * 3 + c] = px[i * 4 + c];
         detailIsSlope = t.kind == TextureKind::Normal;
     }
 
-    // Colour/grayscale: edge strength (gradient magnitude). Normal maps: the tilt itself,
-    // which is strongest where the colour texture has its edges.
+    // Colour/grayscale: edge strength (gradient magnitude). Normal maps: how far the surface
+    // tilts, which is strongest where the colour texture has its edges.
     std::vector<float> structure(n);
     for (int y = 0; y < kSample; ++y) {
         for (int x = 0; x < kSample; ++x) {
             if (detailIsSlope) {
-                structure[y * kSample + x] = detail[y * kSample + x];
+                const int i = (y * kSample + x) * 3;
+                const float nx = detail[i] * 2 - 1, ny = detail[i + 1] * 2 - 1;
+                structure[y * kSample + x] = std::sqrt(nx * nx + ny * ny);
                 continue;
             }
-            auto at = [&](int xx, int yy) {
-                return detail[std::clamp(yy, 0, kSample - 1) * kSample + std::clamp(xx, 0, kSample - 1)];
-            };
-            const float gx = at(x + 1, y) - at(x - 1, y), gy = at(x, y + 1) - at(x, y - 1);
-            structure[y * kSample + x] = std::sqrt(gx * gx + gy * gy);
+            float sum = 0;
+            for (int c = 0; c < planes; ++c) {
+                auto at = [&](int xx, int yy) {
+                    return detail[(std::clamp(yy, 0, kSample - 1) * kSample + std::clamp(xx, 0, kSample - 1)) * 3 + c];
+                };
+                const float gx = at(x + 1, y) - at(x - 1, y), gy = at(x, y + 1) - at(x, y - 1);
+                sum += gx * gx + gy * gy;
+            }
+            structure[y * kSample + x] = std::sqrt(sum);
         }
     }
     float reduced[kDetail * kDetail];
@@ -169,8 +172,9 @@ TextureTraits AnalyzePixels(const float* rgba, DXGI_FORMAT format) {
             peak = std::max(peak, v);
         }
     }
+    // Square root, so a few strong edges don't drown out the rest.
     for (int i = 0; i < kDetail * kDetail; ++i)
-        t.detail[i] = peak > 0 ? uint8_t(std::lround(reduced[i] / peak * 255.0f)) : 0;
+        t.detail[i] = peak > 0 ? uint8_t(std::lround(std::sqrt(reduced[i] / peak) * 255.0f)) : 0;
 
     if (t.kind == TextureKind::Color) {
         // Black Ice: at least 20% saturated cyan, 5% near-white and 2% near-black. Checked

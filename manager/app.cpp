@@ -339,6 +339,18 @@ void App::ComputeSimilar() {
     s.computed = srcTraits.has_value();
     if (!srcTraits) return;
 
+    // Games dump textures one after another as they load them, and a material's textures
+    // load together: in Siege its colour texture, right after it the normal map, then the
+    // packed map. So for dumps, the position in that order says the most.
+    std::vector<int64_t> dumpTimes;
+    dumpTimes.reserve(library_.dumps().size());
+    for (const auto& f : library_.dumps()) dumpTimes.push_back(f.modified);
+    std::sort(dumpTimes.begin(), dumpTimes.end());
+    auto position = [&](int64_t modified) {
+        return std::lower_bound(dumpTimes.begin(), dumpTimes.end(), modified) - dumpTimes.begin();
+    };
+    const ptrdiff_t srcPosition = position(src.modified);
+
     auto consider = [&](const TextureFile& f, bool isMod) {
         if (f.path == src.path || f.hash == src.hash) return;
         // Material textures share an aspect ratio; usually the exact size.
@@ -352,14 +364,18 @@ void App::ComputeSimilar() {
         if (s.mode == SimilarMode::Colors && t->kind != TextureKind::Color) return;
 
         const float detail = std::max(0.0f, DetailSimilarity(*srcTraits, *t));
-        const float sizeScore = (f.width == src.width && f.height == src.height) ? 1.0f : 0.4f;
+        // Siege's normal and packed maps are often a half or a quarter of the colour texture's size.
+        const uint32_t wider = std::max(f.width, src.width), narrower = std::min(f.width, src.width);
+        const uint32_t ratio = narrower && wider % narrower == 0 ? wider / narrower : 0;
+        const bool sizeFits = ratio == 1 || ratio == 2 || ratio == 4;
+        const float sizeScore = sizeFits ? 1.0f : 0.6f;
         float score;
         if (!isMod && !s.sourceIsMod) {
-            // Games load a material's textures together, so dumps of one material were
-            // written within moments of each other.
-            const double seconds = std::fabs(double(f.modified - src.modified)) / 1e7;
-            const float timeScore = float(1.0 / (1.0 + seconds / 5.0));
-            score = 0.65f * detail + 0.15f * sizeScore + 0.20f * timeScore;
+            // The next dump scores 1, two away 0.5, three away 0.33...; the wrong side half that.
+            const ptrdiff_t d = position(f.modified) - srcPosition;
+            float orderScore = 1.0f / float(1 + std::max<ptrdiff_t>(0, std::abs(d) - 1));
+            if ((s.mode == SimilarMode::Normals && d < 0) || (s.mode == SimilarMode::Colors && d > 0)) orderScore *= 0.5f;
+            score = 0.25f * detail + 0.10f * sizeScore + 0.65f * orderScore;
         } else {
             score = 0.8f * detail + 0.2f * sizeScore;
         }
@@ -2040,8 +2056,9 @@ void App::DrawSimilarWindow() {
     if (ImGui::Button("Refresh")) ComputeSimilar();
     ImGui::EndGroup();
 
-    ImGui::TextWrapped("Ranked by matching detail, same size, and (for dumps) being saved at nearly the same moment, "
-                       "since games load a material's textures together. Check the top results by eye.");
+    ImGui::TextWrapped("For dumps, ranked mostly by dump order: games load a material's textures together, and "
+                       "a normal map is usually dumped right after its colour texture. Also by matching detail and "
+                       "size. Check the top results by eye.");
     if (!s.computed) ImGui::TextColored(AccentTextColor(), "Analysing this texture...");
     else if (s.notAnalysed)
         ImGui::TextColored(kDimColor, "%zu candidate(s) not analysed yet; Refresh later for more results.", s.notAnalysed);
