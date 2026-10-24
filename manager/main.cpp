@@ -131,7 +131,8 @@ void SetupStyle(float scale) {
     wchar_t fonts[MAX_PATH];
     GetWindowsDirectoryW(fonts, MAX_PATH);
     const std::filesystem::path segoe = std::filesystem::path(fonts) / L"Fonts" / L"segoeui.ttf";
-    if (std::filesystem::exists(segoe))
+    std::error_code ec;
+    if (std::filesystem::exists(segoe, ec))
         io.Fonts->AddFontFromFileTTF(segoe.string().c_str(), 17.0f * scale);
     else
         io.Fonts->AddFontDefault();

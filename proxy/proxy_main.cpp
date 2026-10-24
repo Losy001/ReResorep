@@ -28,7 +28,8 @@ HMODULE LoadRealD3D11() {
     // A d3d11.dll the game shipped with (or another wrapper such as ReShade) is
     // kept as ori_d3d11.dll by the installer, so chain to it when present.
     const std::filesystem::path chained = resorep::proxy::ModuleDirectory() / L"ori_d3d11.dll";
-    if (std::filesystem::exists(chained)) {
+    std::error_code ec;  // no exceptions while the game loads d3d11.dll
+    if (std::filesystem::exists(chained, ec)) {
         if (HMODULE m = LoadLibraryW(chained.c_str())) {
             if (!IsOurProxy(m)) return m;
             FreeLibrary(m);

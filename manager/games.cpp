@@ -221,18 +221,19 @@ GameState InspectGame(const fs::path& exe, const ManagerSettings& settings) {
     if (auto it = settings.exeHashes.find(GameKey(exe)); it != settings.exeHashes.end())
         st.previousSha256 = it->second.previous;
     st.ownFolders = settings.UsesOwnFolders(exe);
-    if (!fs::exists(exe)) {
+    std::error_code ec;
+    if (!fs::exists(exe, ec)) {
         st.status = ProxyStatus::Missing;
         return st;
     }
     const fs::path dir = exe.parent_path();
     const fs::path dll = dir / L"d3d11.dll";
     const fs::path ori = dir / L"ori_d3d11.dll";
-    if (fs::exists(dll)) {
+    if (fs::exists(dll, ec)) {
         if (IsOurProxy(dll)) st.status = FilesEqual(dll, BundledProxy()) ? ProxyStatus::Installed : ProxyStatus::Outdated;
         else if (IsLegacyProxy(dll)) st.status = ProxyStatus::LegacyResorep;
     }
-    st.chainsOtherD3D11 = fs::exists(ori) && !IsMicrosoftDll(ori) && !IsAnyProxy(ori);
+    st.chainsOtherD3D11 = fs::exists(ori, ec) && !IsMicrosoftDll(ori) && !IsAnyProxy(ori);
     if (st.status == ProxyStatus::Installed || st.status == ProxyStatus::Outdated) {
         st.proxyVersion = FileVersionString(dll);
         if (st.proxyVersion.empty()) st.proxyVersion = "pre-2.0 build";  // built before version info existed
@@ -266,23 +267,23 @@ std::string RequestRedump(const fs::path& exe) {
 
 std::string InstallProxy(const fs::path& exe, const ManagerSettings& settings) {
     const fs::path bundled = BundledProxy();
-    if (!fs::exists(bundled)) return "proxy\\d3d11.dll is missing next to ReResorep.exe";
-    if (!fs::exists(exe)) return "Game executable not found";
+    std::error_code ec;
+    if (!fs::exists(bundled, ec)) return "proxy\\d3d11.dll is missing next to ReResorep.exe";
+    if (!fs::exists(exe, ec)) return "Game executable not found";
 
     const fs::path dir = exe.parent_path();
     const fs::path dll = dir / L"d3d11.dll";
     const fs::path ori = dir / L"ori_d3d11.dll";
-    std::error_code ec;
 
-    if (fs::exists(dll) && !IsAnyProxy(dll)) {
+    if (fs::exists(dll, ec) && !IsAnyProxy(dll)) {
         // The game (or a tool like ReShade) already has a d3d11.dll: keep it and chain to it.
-        if (fs::exists(ori)) fs::rename(ori, dir / L"ori_d3d11.dll.bak", ec);
+        if (fs::exists(ori, ec)) fs::rename(ori, dir / L"ori_d3d11.dll.bak", ec);
         if (!ec) fs::rename(dll, ori, ec);
         if (ec) return Describe("Could not keep the existing d3d11.dll", ec);
     }
     // The old Resorep copied System32's d3d11.dll here; a stale copy breaks after
     // Windows updates, and our proxy loads the system one directly.
-    if (fs::exists(ori) && IsMicrosoftDll(ori)) fs::remove(ori, ec);
+    if (fs::exists(ori, ec) && IsMicrosoftDll(ori)) fs::remove(ori, ec);
 
     fs::copy_file(bundled, dll, fs::copy_options::overwrite_existing, ec);
     if (ec) return Describe("Could not copy d3d11.dll", ec);
@@ -295,12 +296,12 @@ std::string UninstallProxy(const fs::path& exe) {
     const fs::path ori = dir / L"ori_d3d11.dll";
     std::error_code ec;
 
-    if (fs::exists(dll)) {
+    if (fs::exists(dll, ec)) {
         if (!IsAnyProxy(dll)) return "d3d11.dll in the game folder is not a Resorep proxy; leaving it alone";
         fs::remove(dll, ec);
         if (ec) return Describe("Could not remove d3d11.dll", ec);
     }
-    if (fs::exists(ori)) {
+    if (fs::exists(ori, ec)) {
         if (IsMicrosoftDll(ori) || IsAnyProxy(ori)) fs::remove(ori, ec);
         else fs::rename(ori, dll, ec);  // restore the game's own / other tool's d3d11.dll
         if (ec) return Describe("Could not restore ori_d3d11.dll", ec);

@@ -82,6 +82,12 @@ ImVec2 Fit(uint32_t w, uint32_t h, float box) {
     return ImVec2(std::max(1.0f, w * scale), std::max(1.0f, h * scale));
 }
 
+// fs::exists that never throws (it can, e.g. on access denied); false when it can't tell.
+bool Exists(const fs::path& path) {
+    std::error_code ec;
+    return fs::exists(path, ec);
+}
+
 // Deferred actions keep their own copies: the library is rescanned before they run.
 std::vector<TextureFile> Copies(const std::vector<const TextureFile*>& files) {
     std::vector<TextureFile> copies;
@@ -525,7 +531,7 @@ void App::DrawPackagePopups() {
         ImGui::SetNextItemWidth(320);
         ImGui::InputText("Mod name", d.name, sizeof(d.name));
         const std::wstring folder = SafeFolderName(d.name);
-        const bool exists = !folder.empty() && fs::exists(library_.moddedFolder() / folder);
+        const bool exists = !folder.empty() && Exists(library_.moddedFolder() / folder);
         if (folder.empty()) {
             ImGui::TextColored(kErrorColor, "Enter a name for the mod.");
         } else if (exists) {
@@ -920,7 +926,7 @@ void App::DrawMoveItems(const std::vector<const TextureFile*>& files, bool copy)
         ImGui::Indent(float(depth) * 10.0f);
         // Ticked and greyed where the textures already are (copying: any file of the same name).
         const bool there = std::all_of(files.begin(), files.end(), [&](const TextureFile* f) {
-            return copy ? fs::exists(library_.moddedFolder() / rel / f->path.filename())
+            return copy ? Exists(library_.moddedFolder() / rel / f->path.filename())
                         : DisabledSet::Key(rel) == DisabledSet::Key(f->relDir);
         });
         if (ImGui::MenuItem(label, nullptr, there, !there))
@@ -999,7 +1005,7 @@ void App::Recycle(const std::vector<TextureFile>& files) {
 
 void App::AddDumpsToMod(const std::vector<TextureFile>& dumps, const std::wstring& rel) {
     const std::string where = rel.empty() ? "loose textures" : "\"" + WideToUtf8(rel) + "\"";
-    if (dumps.size() == 1 && fs::exists(library_.TargetPath(dumps[0].hash, "", rel))) {
+    if (dumps.size() == 1 && Exists(library_.TargetPath(dumps[0].hash, "", rel))) {
         Status(where + " already has a texture for " + std::to_string(dumps[0].hash), "");
         return;
     }
@@ -1007,7 +1013,7 @@ void App::AddDumpsToMod(const std::vector<TextureFile>& dumps, const std::wstrin
     size_t added = 0, already = 0;
     library_.Batch([&] {
         for (const TextureFile& d : dumps) {
-            if (fs::exists(library_.TargetPath(d.hash, "", rel))) {
+            if (Exists(library_.TargetPath(d.hash, "", rel))) {
                 ++already;
                 continue;
             }
@@ -1037,7 +1043,7 @@ void App::DrawAddToModItems(const std::vector<const TextureFile*>& dumps) {
     auto item = [&](const char* label, const std::wstring& rel, int depth) {
         ImGui::Indent(float(depth) * 10.0f);
         const bool already = std::all_of(dumps.begin(), dumps.end(), [&](const TextureFile* d) {
-            return fs::exists(library_.TargetPath(d->hash, "", rel));
+            return Exists(library_.TargetPath(d->hash, "", rel));
         });
         if (ImGui::MenuItem(label, nullptr, already, !already))
             Defer([this, dumps = Copies(dumps), rel] { AddDumpsToMod(dumps, rel); });
@@ -2079,7 +2085,7 @@ void App::DrawGames() {
     if (ImGui::Button("Refresh")) RefreshGames();
     ImGui::SameLine();
     ImGui::TextColored(kDimColor, "Close the game before installing or removing. For Siege pick RainbowSix.exe.");
-    if (!fs::exists(BundledProxy()))
+    if (!Exists(BundledProxy()))
         ImGui::TextColored(kErrorColor, "proxy\\d3d11.dll is missing next to ReResorep.exe - reinstall ReResorep.");
     ImGui::Spacing();
 
@@ -2357,7 +2363,7 @@ void App::DrawSettings() {
     if (ImGui::Button("Export labels...")) ExportLabels();
     ImGui::SameLine();
     if (ImGui::Button("Open labels file")) {
-        if (!std::filesystem::exists(LabelsFile())) labels_.Save(LabelsFile());
+        if (!Exists(LabelsFile())) labels_.Save(LabelsFile());
         OpenWithShell(LabelsFile());
     }
 

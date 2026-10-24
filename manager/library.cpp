@@ -326,8 +326,9 @@ std::string Library::CreateFolder(const std::wstring& parentRel, const std::stri
     const std::wstring clean = SafeFolderName(name);  // same rules as mod import
     if (clean.empty()) return "Enter a name.";
     const fs::path dir = modded_ / parentRel / clean;
-    if (fs::exists(dir)) return "A folder with that name already exists.";
     std::error_code ec;
+    if (fs::exists(dir, ec)) return "A folder with that name already exists.";
+    if (ec) return ErrorText(ec);
     fs::create_directories(dir, ec);
     Refresh();
     return ErrorText(ec);
@@ -341,9 +342,11 @@ std::string Library::RenameFolder(const std::wstring& rel, const std::string& na
     const fs::path to = from.parent_path() / clean;
     if (from.filename() == to.filename()) return {};
     // A change of case only is the same folder on Windows, so it "exists" already.
-    if (DisabledSet::Key(from.filename()) != DisabledSet::Key(to.filename()) && fs::exists(to))
-        return "A folder with that name already exists.";
     std::error_code ec;
+    if (DisabledSet::Key(from.filename()) != DisabledSet::Key(to.filename())) {
+        if (fs::exists(to, ec)) return "A folder with that name already exists.";
+        if (ec) return ErrorText(ec);
+    }
     fs::rename(from, to, ec);
     if (ec) return ErrorText(ec);
     disabled_.Rename(from.lexically_relative(modded_), to.lexically_relative(modded_));
@@ -354,7 +357,8 @@ std::string Library::MoveTo(const TextureFile& mod, const std::wstring& relDir) 
     const fs::path target = modded_ / relDir / mod.path.filename();
     std::error_code ec;
     if (fs::equivalent(target.parent_path(), mod.path.parent_path(), ec)) return {};
-    if (fs::exists(target)) return "That category already has a file with this name.";
+    if (fs::exists(target, ec)) return "That category already has a file with this name.";
+    if (ec) return ErrorText(ec);  // rename would replace a file it couldn't see
     fs::rename(mod.path, target, ec);
     if (ec) return ErrorText(ec);
     disabled_.Rename(mod.path.lexically_relative(modded_), target.lexically_relative(modded_));
@@ -363,8 +367,9 @@ std::string Library::MoveTo(const TextureFile& mod, const std::wstring& relDir) 
 
 std::string Library::CopyTo(const TextureFile& mod, const std::wstring& relDir) {
     const fs::path target = modded_ / relDir / mod.path.filename();
-    if (fs::exists(target)) return "That category already has a file with this name.";
     std::error_code ec;
+    if (fs::exists(target, ec)) return "That category already has a file with this name.";
+    if (ec) return ErrorText(ec);
     fs::create_directories(target.parent_path(), ec);
     fs::copy_file(mod.path, target, ec);
     Refresh();

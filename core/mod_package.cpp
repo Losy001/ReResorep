@@ -125,7 +125,8 @@ PackageResult ExportModPackage(const fs::path& moddedRoot, const std::wstring& r
     PackageResult r;
     const fs::path folder = moddedRoot / rel;
     const std::string name = WideToUtf8(fs::path(rel).filename().wstring());
-    if (rel.empty() || name.empty() || !fs::is_directory(folder)) {
+    std::error_code dirError;
+    if (rel.empty() || name.empty() || !fs::is_directory(folder, dirError)) {
         r.error = "Pick a mod or category to export.";
         return r;
     }
@@ -267,7 +268,7 @@ PackageResult ImportModPackage(const fs::path& zipPath, const fs::path& moddedRo
             ++r.folders;
             continue;
         }
-        if (fs::exists(out) && !overwrite) {
+        if (!overwrite && (fs::exists(out, ec) || ec)) {  // can't tell: keep what may be there
             ++r.skipped;
             continue;
         }

@@ -108,7 +108,8 @@ void OpenWithShell(const fs::path& path) {
 }
 
 std::string LaunchProgram(const fs::path& exe) {
-    if (!fs::exists(exe)) return "Game executable not found";
+    std::error_code ec;
+    if (!fs::exists(exe, ec)) return "Game executable not found";
     const std::wstring dir = exe.parent_path().wstring();
     SHELLEXECUTEINFOW info{sizeof(info)};
     info.fMask = SEE_MASK_NOASYNC | SEE_MASK_FLAG_NO_UI;

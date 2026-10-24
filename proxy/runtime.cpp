@@ -179,8 +179,9 @@ void Runtime::WatchThread() {
             // A folder that doesn't exist yet is polled every 2 s until it appears.
             const DWORD r = WaitForMultipleObjects(count, waits, FALSE, count < 3 ? 2000 : INFINITE);
             if (r == WAIT_TIMEOUT) {
-                restart = (handles[kModded] == INVALID_HANDLE_VALUE && fs::exists(modded)) ||
-                          (handles[kOriginal] == INVALID_HANDLE_VALUE && fs::exists(original));
+                std::error_code ec;  // no exceptions in the game's process
+                restart = (handles[kModded] == INVALID_HANDLE_VALUE && fs::exists(modded, ec)) ||
+                          (handles[kOriginal] == INVALID_HANDLE_VALUE && fs::exists(original, ec));
                 if (restart) {
                     Rescan();
                     SyncDumpsWithDisk();
