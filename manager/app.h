@@ -84,6 +84,7 @@ private:
     void Redump();
     void DrawSimilarWindow();
     void DrawLabelEditor(const TextureFile& file, float width);
+    void DrawLabelPopup();
 
     // Labels and similarity search.
     enum class SimilarMode { Normals, Colors, Any };
@@ -170,7 +171,10 @@ private:
     std::optional<SimilarSearch> similar_;
     char labelEdit_[128] = {};
     std::optional<uint32_t> labelEditHash_;
-    bool focusLabel_ = false;
+    // Right-click > Edit label: a small dialog for that hash.
+    uint32_t labelDialogHash_ = 0;
+    char labelDialog_[128] = {};
+    bool openLabelPopup_ = false;
     struct PreviewTweak {
         int quarterTurns = 0;  // clockwise
         bool mirror = false;

@@ -709,6 +709,7 @@ void App::Frame() {
     DrawFolderPopups();
     DrawPackagePopups();
     DrawDeleteDumpsPopup();
+    DrawLabelPopup();
     ImGui::End();
     DrawSimilarWindow();
 
@@ -1570,18 +1571,22 @@ void App::DrawCard(const TextureFile& file, bool isMod, float size) {
     const ImU32 border = selected ? ImGui::GetColorU32(AccentColor()) : hovered ? IM_COL32(120, 120, 130, 255) : 0;
     if (border) dl->AddRect(pos, ImVec2(pos.x + size, pos.y + size), border, 4.0f, 0, selected ? 2.5f : 1.0f);
 
+    // A label of your own takes the hash's place on top; the hash moves to the second line.
     char line[64];
     snprintf(line, sizeof(line), "%u", file.hash);
+    const std::string* userLabel = labels_.Get(file.hash);
     dl->PushClipRect(ImVec2(pos.x, pos.y + size), ImVec2(pos.x + size, pos.y + cardSize.y), true);
-    dl->AddText(ImVec2(pos.x + 2, pos.y + size + 2), IM_COL32(230, 230, 230, 255), line);
+    if (userLabel) dl->AddText(ImVec2(pos.x + 2, pos.y + size + 2), ImGui::GetColorU32(AccentTextColor()), userLabel->c_str());
+    else dl->AddText(ImVec2(pos.x + 2, pos.y + size + 2), IM_COL32(230, 230, 230, 255), line);
     const ImVec2 line2(pos.x + 2, pos.y + size + 2 + textH);
     if (settings_.sortKey == "date") {
         dl->AddText(line2, IM_COL32(150, 150, 160, 255), FormatDate(file.modified).c_str());
     } else if (settings_.sortKey == "filesize") {
         dl->AddText(line2, IM_COL32(150, 150, 160, 255), FormatBytes(file.size).c_str());
-    } else if (const std::string& label = DisplayLabel(file); !label.empty())
-        dl->AddText(line2, labels_.Get(file.hash) ? ImGui::GetColorU32(AccentTextColor()) : IM_COL32(150, 150, 160, 255),
-                    label.c_str());
+    } else if (userLabel) {
+        dl->AddText(line2, IM_COL32(150, 150, 160, 255), line);
+    } else if (!file.label.empty())
+        dl->AddText(line2, IM_COL32(150, 150, 160, 255), file.label.c_str());
     else if (info && !info->error.empty())
         dl->AddText(ImVec2(pos.x + 2, pos.y + size + 2 + textH), IM_COL32(255, 120, 110, 255), info->error.c_str());
     else if (info) {
@@ -1619,7 +1624,12 @@ void App::DrawCardMenu(const TextureFile& file, bool isMod, const TextureInfo* i
     ImGui::SetItemTooltip(encryptedFile ? "Encrypted (resorep1) textures can't be exported."
                                         : "Full resolution, turned and mirrored the way the preview shows it.");
     ImGui::Separator();
-    if (ImGui::MenuItem("Edit label")) focusLabel_ = true;
+    if (ImGui::MenuItem("Edit label...")) {
+        const std::string* current = labels_.Get(file.hash);
+        snprintf(labelDialog_, sizeof(labelDialog_), "%s", current ? current->c_str() : "");
+        labelDialogHash_ = file.hash;
+        openLabelPopup_ = true;
+    }
     const bool isNormal = KindOf(file) == TextureKind::Normal;
     if (ImGui::MenuItem(isNormal ? "Find its color texture" : "Find its normal map"))
         OpenSimilar(file, isMod, isNormal ? SimilarMode::Colors : SimilarMode::Normals);
@@ -1957,10 +1967,6 @@ void App::DrawLabelEditor(const TextureFile& file, float width) {
         snprintf(labelEdit_, sizeof(labelEdit_), "%s", current ? current->c_str() : "");
         labelEditHash_ = file.hash;
     }
-    if (focusLabel_) {
-        ImGui::SetKeyboardFocusHere();
-        focusLabel_ = false;
-    }
     ImGui::SetNextItemWidth(width - 70);
     ImGui::InputTextWithHint("##label", "Label this hash (e.g. Ash helmet)", labelEdit_, sizeof(labelEdit_));
     if (ImGui::IsItemDeactivatedAfterEdit()) SetLabel(file.hash, labelEdit_);
@@ -1973,6 +1979,28 @@ void App::DrawLabelEditor(const TextureFile& file, float width) {
         SetLabel(file.hash, "");
     }
     ImGui::EndDisabled();
+}
+
+void App::DrawLabelPopup() {
+    if (openLabelPopup_) {
+        ImGui::OpenPopup("Edit label");
+        openLabelPopup_ = false;
+    }
+    if (!ImGui::BeginPopupModal("Edit label", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) return;
+    ImGui::Text("Label for hash %u:", labelDialogHash_);
+    if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+    ImGui::SetNextItemWidth(300);
+    const bool enter = ImGui::InputTextWithHint("##label", "e.g. Ash helmet (empty removes it)", labelDialog_,
+                                                sizeof(labelDialog_),
+                                                ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
+    if (ImGui::Button("Save", ImVec2(120, 0)) || enter) {
+        SetLabel(labelDialogHash_, labelDialog_);
+        labelEditHash_.reset();  // the details panel's editor shows the new label
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", ImVec2(120, 0)) || ImGui::IsKeyPressed(ImGuiKey_Escape)) ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
 }
 
 void App::DrawSimilarWindow() {
