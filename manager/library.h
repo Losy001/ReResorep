@@ -1,6 +1,7 @@
 #pragma once
 #include <windows.h>
 
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <string>
@@ -43,7 +44,7 @@ public:
     void SetFolders(const std::filesystem::path& modded, const std::filesystem::path& original);
     ~Library();
 
-    // Rescans if a folder changed on disk (cheap to call every frame).
+    // Rescans once a folder changed on disk and then went quiet (cheap to call every frame).
     bool RefreshIfChanged();
     void Refresh();
 
@@ -98,6 +99,8 @@ private:
     bool infoCacheLoaded_ = false;
     size_t infoUnsaved_ = 0;  // headers read since the cache file was last written
     HANDLE watches_[2] = {INVALID_HANDLE_VALUE, INVALID_HANDLE_VALUE};
+    bool changePending_ = false;  // a folder changed since the last rescan
+    std::chrono::steady_clock::time_point firstChange_, lastChange_;
 };
 
 }  // namespace resorep::ui

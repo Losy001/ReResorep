@@ -220,11 +220,22 @@ std::wstring FileCompanyName(const fs::path& path) {
     return value;
 }
 
-bool FileContains(const fs::path& path, const std::string& needle) {
+namespace {
+// The whole file in one read; reading it a character at a time is far slower.
+std::optional<std::string> ReadWholeFile(const fs::path& path) {
+    std::error_code ec;
+    const auto size = fs::file_size(path, ec);
+    if (ec) return std::nullopt;
     std::ifstream in(path, std::ios::binary);
-    if (!in) return false;
-    const std::string data((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-    return data.find(needle) != std::string::npos;
+    std::string data(size_t(size), '\0');
+    if (!in.read(data.data(), std::streamsize(data.size()))) return std::nullopt;
+    return data;
+}
+}  // namespace
+
+bool FileContains(const fs::path& path, const std::string& needle) {
+    const auto data = ReadWholeFile(path);
+    return data && data->find(needle) != std::string::npos;
 }
 
 bool FilesEqual(const fs::path& a, const fs::path& b) {
@@ -232,9 +243,8 @@ bool FilesEqual(const fs::path& a, const fs::path& b) {
     const auto sizeA = fs::file_size(a, ea);
     const auto sizeB = fs::file_size(b, eb);
     if (ea || eb || sizeA != sizeB) return false;
-    std::ifstream fa(a, std::ios::binary), fb(b, std::ios::binary);
-    return std::equal(std::istreambuf_iterator<char>(fa), std::istreambuf_iterator<char>(),
-                      std::istreambuf_iterator<char>(fb));
+    const auto da = ReadWholeFile(a), db = ReadWholeFile(b);
+    return da && db && *da == *db;
 }
 
 fs::path ExeDirectory() {

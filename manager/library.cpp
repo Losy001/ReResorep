@@ -156,15 +156,23 @@ void Library::Watch() {
 }
 
 bool Library::RefreshIfChanged() {
-    bool changed = false;
+    // A running game dumps textures one after another; rescan once the folder has been quiet
+    // for a moment instead of on every file, but at least once a second while it keeps going.
+    constexpr auto kQuiet = std::chrono::milliseconds(250);
+    constexpr auto kMaxWait = std::chrono::seconds(1);
+    const auto now = std::chrono::steady_clock::now();
     for (HANDLE h : watches_) {
         if (h != INVALID_HANDLE_VALUE && WaitForSingleObject(h, 0) == WAIT_OBJECT_0) {
             FindNextChangeNotification(h);
-            changed = true;
+            if (!changePending_) firstChange_ = now;
+            changePending_ = true;
+            lastChange_ = now;
         }
     }
-    if (changed) Refresh();
-    return changed;
+    if (!changePending_ || (now - lastChange_ < kQuiet && now - firstChange_ < kMaxWait)) return false;
+    changePending_ = false;
+    Refresh();
+    return true;
 }
 
 void Library::Refresh() {
