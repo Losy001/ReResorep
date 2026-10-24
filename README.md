@@ -7,6 +7,10 @@ proxy. Neither needs a runtime or a VC++ redistributable.
 Existing Resorep texture packs keep working unchanged. That includes `<hash>.dds`,
 `<hash>~name.dds`, encrypted `resorep1` packs, and the original's ±2 hash tolerance.
 
+> **DirectX 12:** current Siege (Y10S1 and later, including Siege X) runs on DirectX 12 only,
+> so the `d3d11.dll` proxy only works with older builds that still had DX11. D3D12 support is
+> not implemented yet; see [docs/DX12.md](docs/DX12.md) for how it could work.
+
 > **Anti-cheat:** online Siege runs BattlEye, and a replacement `d3d11.dll` in the game folder
 > is the kind of thing it can flag. Use this for offline/modded setups.
 
@@ -160,6 +164,7 @@ The output goes to `build/bin/`: `ReResorep.exe` and `proxy/d3d11.dll`. Ship tha
   `tests/zip_fixture.inc` is a zip made by Python (`tools/gen_zip_fixture.py`), so the zip reader is tested against
   another tool, including path-traversal entries.
 - `third_party/imgui` is Dear ImGui v1.91.8 (MIT).
+- `docs/DX12.md` has design notes for a possible D3D12 proxy.
 
 ## Compatibility notes, from reverse-engineering `dx11proxy64.dll`
 
