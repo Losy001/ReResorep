@@ -152,10 +152,24 @@ int main() {
             }
         Save(dir / L"blackice.dds", DXGI_FORMAT_R8G8B8A8_UNORM, px, 4);
     }
+    // The same, with a raspberry-pink quarter beside it (a sticker sheet): not Black Ice.
+    {
+        std::vector<uint8_t> px(kSize * kSize * 4);
+        for (uint32_t y = 0; y < kSize; ++y)
+            for (uint32_t x = 0; x < kSize; ++x) {
+                const float t = thirds((x + 0.5f) / kSize, 0);
+                uint32_t c = t == 0.0f ? 0xFFE0C040u : t == 0.5f ? 0xFFF8F8F8u : 0xFF101010u;
+                if (x < kSize / 2 && y < kSize / 2) c = 0xFF6040E0u;
+                std::memcpy(&px[(y * kSize + x) * 4], &c, 4);
+            }
+        Save(dir / L"teasheet.dds", DXGI_FORMAT_R8G8B8A8_UNORM, px, 4);
+    }
     // Plain cyan with no white or dark: not Black Ice.
     WriteColor(dir / L"cyan.dds", plates, 0xFFE0C040, 0xFFD0B030);
-    TextureTraits blackIce, plainCyan;
+    TextureTraits blackIce, plainCyan, teaSheet;
     CHECK(analyzer.AnalyzeNow(dir / L"blackice.dds", blackIce));
+    CHECK(analyzer.AnalyzeNow(dir / L"teasheet.dds", teaSheet));
+    CHECK(teaSheet.kind == TextureKind::Color && !teaSheet.icy);
     CHECK(analyzer.AnalyzeNow(dir / L"cyan.dds", plainCyan));
     CHECK(blackIce.kind == TextureKind::Color && blackIce.icy);
     CHECK(!plainCyan.icy);

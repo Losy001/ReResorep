@@ -20,7 +20,7 @@ namespace {
 constexpr int kSample = 32;   // GPU sample size
 constexpr int kDetail = 16;   // fingerprint size
 constexpr uint32_t kLoadMax = 64;  // largest mip read from disk for analysis
-constexpr char kCacheMagic[4] = {'R', 'R', 'A', '6'};  // bump when classification changes
+constexpr char kCacheMagic[4] = {'R', 'R', 'A', '7'};  // bump when classification changes
 
 }  // namespace
 
@@ -176,8 +176,10 @@ TextureTraits AnalyzePixels(const float* rgba, DXGI_FORMAT format) {
         // Black Ice: at least 20% saturated cyan, 5% near-white and 2% near-black. Checked
         // against ~5300 Siege dumps together with the caller's size check: it picked out
         // the Black Ice weapon sheets, and not blue walls, teal UI art or icy loading screens
-        // (those have no dark cracks, or are not power-of-two sized).
-        int cyan = 0, white = 0, dark = 0;
+        // (those have no dark cracks, or are not power-of-two sized). Under 5% of strong colours
+        // outside cyan to blue, so sheets that only have a cyan, white and navy part (charm and
+        // sticker sheets with red or pink art beside it) stay out.
+        int cyan = 0, white = 0, dark = 0, other = 0;
         for (int i = 0; i < n; ++i) {
             const float r = px[i * 4], g = px[i * 4 + 1], b = px[i * 4 + 2];
             const float v = std::max({r, g, b}), lo = std::min({r, g, b});
@@ -191,9 +193,10 @@ TextureTraits AnalyzePixels(const float* rgba, DXGI_FORMAT format) {
                 else h = (4.0f + (r - g) / (v - lo)) / 6.0f;
                 if (h < 0) h += 1.0f;
                 cyan += h >= 0.45f && h <= 0.58f;
+                other += h < 0.40f || h > 0.72f;
             }
         }
-        t.icy = cyan >= n * 0.2 && white >= n * 0.05 && dark >= n * 0.02;
+        t.icy = cyan >= n * 0.2 && white >= n * 0.05 && dark >= n * 0.02 && other < n * 0.05;
     }
     return t;
 }
