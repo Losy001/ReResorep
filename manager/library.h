@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <string>
 #include <unordered_map>
@@ -91,6 +92,9 @@ public:
     std::string Import(const std::filesystem::path& source, uint32_t hash, const std::string& label, bool overwrite,
                        const std::wstring& relDir = {});
     std::filesystem::path TargetPath(uint32_t hash, const std::string& label, const std::wstring& relDir = {}) const;
+    // Runs several of the changes above with their saving and rescanning held back until the
+    // end, for changes to many files at once. Returns the error from that final save.
+    std::string Batch(const std::function<void()>& changes);
 
 private:
     TextureFile MakeFile(const std::filesystem::directory_entry& entry, uint32_t hash);
@@ -120,6 +124,7 @@ private:
     size_t infoUnsaved_ = 0;  // headers read since the cache file was last written
     HANDLE watches_[2] = {INVALID_HANDLE_VALUE, INVALID_HANDLE_VALUE};
     bool changePending_ = false;  // a folder changed since the last rescan
+    bool batching_ = false, saveHeld_ = false, refreshHeld_ = false;  // see Batch()
     std::chrono::steady_clock::time_point firstChange_, lastChange_;
 };
 

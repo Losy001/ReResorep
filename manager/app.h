@@ -11,6 +11,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <imgui.h>
@@ -49,10 +50,15 @@ private:
     void DrawSidebar();
     void DrawFolderNode(size_t& index);
     void DrawFolderPopups();
-    void DrawMoveMenu(const TextureFile& file, bool copy);  // "Move to" or "Copy to"
-    void DrawAddToModMenu(const TextureFile& dump);
-    void DrawAddToModItems(const TextureFile& dump);  // the menu's entries, also used by the details button
-    void AddDumpToMod(const TextureFile& dump, const std::wstring& rel);
+    // These act on every texture given (the grid's selection, or the one right-clicked).
+    void DrawMoveMenu(const std::vector<const TextureFile*>& files, bool copy);  // "Move to" or "Copy to"
+    void DrawMoveItems(const std::vector<const TextureFile*>& files, bool copy);  // the menu's entries
+    void MoveOrCopy(const std::vector<TextureFile>& files, const std::wstring& rel, bool copy);
+    void DrawAddToModMenu(const std::vector<const TextureFile*>& dumps);
+    void DrawAddToModItems(const std::vector<const TextureFile*>& dumps);  // the menu's entries, also used by the details button
+    void AddDumpsToMod(const std::vector<TextureFile>& dumps, const std::wstring& rel);
+    void SetEnabled(const std::vector<TextureFile>& mods, bool on);
+    void Recycle(const std::vector<TextureFile>& files);
     bool InView(const TextureFile& file) const;
     std::wstring ImportDir() const { return modView_ == ModView::Folder ? viewFolder_ : std::wstring(); }
     void DrawToolbarDumps();
@@ -65,7 +71,10 @@ private:
     ImVec2 PreviewSize(uint32_t w, uint32_t h, float box, int extraTurns = 0) const;
     void DrawGrid(const std::vector<TextureFile>& files, bool isMod);
     void DrawCard(const TextureFile& file, bool isMod, float size);
+    void DrawCardMenu(const TextureFile& file, bool isMod, const TextureInfo* info);  // right-click on one
+    void DrawSelectionMenu(bool isMod);  // right-click on one of several selected
     void DrawDetails();
+    void DrawSelectionDetails(const std::vector<const TextureFile*>& files);  // when several are selected
     void DrawGames();
     void DrawSettings();
     void DrawAbout();
@@ -144,6 +153,12 @@ private:
     void ResolveExeChange(const std::filesystem::path& exe, bool moveMarks);
     void Status(const std::string& error, const std::string& success);
     const TextureFile* FindSelected() const;
+    // Multi-selection: picked_ holds every texture selected in the grid, selection_ the one the
+    // details panel shows (one of them).
+    std::vector<const TextureFile*> Picked() const;  // in library order
+    void Select(const std::filesystem::path& path, bool isMod);  // just this one
+    void ClearSelection();
+    void PruneSelection();  // drops what is no longer in the library
 
     HWND hwnd_;
     ThumbnailCache thumbs_;
@@ -182,6 +197,7 @@ private:
 
     Tab tab_ = Tab::Mods;
     std::optional<Selection> selection_;
+    std::unordered_set<std::wstring> picked_;  // paths (native strings) of the selected textures
     char filter_[64] = {};          // the search field in the tab row; applies to Mods and Dumps
     std::optional<Tab> selectTab_;  // switch to this tab on the next frame
     bool showDisabled_ = true;
@@ -190,7 +206,7 @@ private:
     ModView modView_ = ModView::All;
     std::wstring viewFolder_;
     std::wstring newFolderParent_;
-    std::optional<TextureFile> addAfterCreate_;  // dump to add once the "New mod" popup creates it
+    std::vector<TextureFile> addAfterCreate_;  // dumps to add once the "New mod" popup creates it
     char newFolderName_[64] = {};
     bool openNewFolderPopup_ = false;
     std::wstring deleteFolder_;

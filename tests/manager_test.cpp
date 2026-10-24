@@ -167,10 +167,41 @@ static void TestSettingsAndHashing() {
     fs::remove_all(root);
 }
 
+// Changes to several selected textures: saved and rescanned once, at the end of the batch.
+static void TestBatch() {
+    const fs::path root = TempDir(L"reresorep_batch_test");
+    const fs::path modded = root / L"modded", original = root / L"original";
+    Touch(modded / L"201.dds");
+    Touch(modded / L"202.dds");
+    Touch(modded / L"203.dds");
+    fs::create_directories(modded / L"Mod");
+    Library lib;
+    lib.SetFolders(modded, original);
+    const std::vector<TextureFile> mods = lib.mods();
+    CHECK(mods.size() == 3);
+
+    const std::string e = lib.Batch([&] {
+        for (const TextureFile& m : mods) CHECK(lib.SetEnabled(m, false).empty());
+        CHECK(lib.mods().size() == 3 && lib.mods()[0].enabled);  // not rescanned yet
+        CHECK(lib.MoveTo(mods[0], L"Mod").empty());
+        CHECK(lib.MoveTo(mods[1], L"Mod").empty());
+    });
+    CHECK(e.empty());
+    CHECK(lib.mods().size() == 3);
+    for (const TextureFile& m : lib.mods()) CHECK(!m.enabled);  // moved ones stay turned off
+    CHECK(Find(lib, L"201.dds") && Find(lib, L"201.dds")->relDir == L"Mod");
+    CHECK(Find(lib, L"203.dds") && Find(lib, L"203.dds")->relDir.empty());
+    DisabledSet saved;
+    saved.Load(modded);
+    CHECK(saved.IsDisabled(L"Mod/202.dds") && saved.IsDisabled(L"203.dds"));
+    fs::remove_all(root);
+}
+
 int main() {
     setvbuf(stdout, nullptr, _IONBF, 0);
     TestWinnersPerBuild();
     TestSettingsAndHashing();
+    TestBatch();
     fs::remove(ExeDirectory() / L"texture_info.cache");  // written by the Library above
     std::printf(g_failures ? "%d check(s) failed\n" : "all manager checks passed\n", g_failures);
     return g_failures ? 1 : 0;

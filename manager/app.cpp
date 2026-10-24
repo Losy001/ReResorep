@@ -82,6 +82,14 @@ ImVec2 Fit(uint32_t w, uint32_t h, float box) {
     return ImVec2(std::max(1.0f, w * scale), std::max(1.0f, h * scale));
 }
 
+// Deferred actions keep their own copies: the library is rescanned before they run.
+std::vector<TextureFile> Copies(const std::vector<const TextureFile*>& files) {
+    std::vector<TextureFile> copies;
+    copies.reserve(files.size());
+    for (const TextureFile* f : files) copies.push_back(*f);
+    return copies;
+}
+
 void HelpMarker(const char* text) {
     ImGui::SameLine();
     ImGui::TextDisabled("(?)");
@@ -133,7 +141,7 @@ void App::ApplyProfile() {
         return;
     }
     library_.SetFolders(modded, original, build);
-    selection_.reset();
+    ClearSelection();
     modView_ = ModView::All;
     QueueAnalysis();
 }
@@ -393,6 +401,58 @@ const TextureFile* App::FindSelected() const {
     return nullptr;
 }
 
+std::vector<const TextureFile*> App::Picked() const {
+    std::vector<const TextureFile*> files;
+    if (!selection_) return files;
+    for (const auto& f : selection_->isMod ? library_.mods() : library_.dumps())
+        if (picked_.count(f.path.native())) files.push_back(&f);
+    return files;
+}
+
+void App::Select(const fs::path& path, bool isMod) {
+    selection_ = Selection{path, isMod};
+    picked_ = {path.native()};
+}
+
+void App::ClearSelection() {
+    selection_.reset();
+    picked_.clear();
+}
+
+void App::PruneSelection() {
+    if (!selection_) {
+        picked_.clear();
+        return;
+    }
+    const auto& list = selection_->isMod ? library_.mods() : library_.dumps();
+    size_t found = 0;
+    for (const auto& f : list) found += picked_.count(f.path.native());
+    if (found == picked_.size() && picked_.count(selection_->path.native())) return;  // all still there
+
+    // A move or rename puts paths together with '/', so they are matched normalised. The details
+    // panel moves on to another selected texture when its own one is gone.
+    std::unordered_set<std::wstring> wanted;
+    for (const std::wstring& p : picked_) wanted.insert(fs::path(p).lexically_normal().native());
+    const std::wstring focus = selection_->path.lexically_normal().native();
+    wanted.insert(focus);
+    picked_.clear();
+    const TextureFile* first = nullptr;
+    bool focusFound = false;
+    for (const auto& f : list) {
+        const std::wstring key = f.path.lexically_normal().native();
+        if (!wanted.count(key)) continue;
+        picked_.insert(f.path.native());
+        if (!first) first = &f;
+        if (key == focus) {
+            selection_->path = f.path;
+            focusFound = true;
+        }
+    }
+    if (focusFound) return;
+    if (first) selection_->path = first->path;
+    else selection_.reset();
+}
+
 void App::OnDropFiles(const std::vector<fs::path>& files) {
     std::vector<fs::path> textures;
     for (const fs::path& f : files) {
@@ -565,7 +625,7 @@ void App::ReplaceDump(uint32_t hash) {
 
 void App::Frame() {
     if (library_.RefreshIfChanged()) {
-        if (selection_ && !FindSelected()) selection_.reset();
+        PruneSelection();
         QueueAnalysis();
     }
     if (similar_ && !similar_->computed) ComputeSimilar();  // waiting for the source's analysis
@@ -583,7 +643,7 @@ void App::Frame() {
         const std::optional<Tab> select = std::exchange(selectTab_, std::nullopt);
         auto tab = [&](const char* name, Tab t) {
             if (ImGui::BeginTabItem(name, nullptr, select == t ? ImGuiTabItemFlags_SetSelected : 0)) {
-                if (tab_ != t) selection_.reset();
+                if (tab_ != t) ClearSelection();
                 tab_ = t;
                 ImGui::EndTabItem();
             }
@@ -690,6 +750,7 @@ void App::Frame() {
     auto actions = std::move(deferred_);
     deferred_.clear();
     for (auto& action : actions) action();
+    if (!actions.empty()) PruneSelection();  // the textures may have moved or gone
 
     thumbs_.EndFrame();
 }
@@ -844,21 +905,22 @@ void App::ExportAsPng(const TextureFile& file) {
     Status(ExportPng(file.path, *target, turns, mirror), "Exported " + ToUtf8(target->filename()));
 }
 
-void App::DrawMoveMenu(const TextureFile& file, bool copy) {
+void App::DrawMoveMenu(const std::vector<const TextureFile*>& files, bool copy) {
     if (!ImGui::BeginMenu(copy ? "Copy to" : "Move to")) return;
+    DrawMoveItems(files, copy);
+    ImGui::EndMenu();
+}
+
+void App::DrawMoveItems(const std::vector<const TextureFile*>& files, bool copy) {
     auto item = [&](const char* label, const std::wstring& rel, int depth) {
         ImGui::Indent(float(depth) * 10.0f);
-        // Ticked and greyed where the texture already is (copying: any file of the same name).
-        const bool there = copy ? fs::exists(library_.moddedFolder() / rel / file.path.filename())
-                                : DisabledSet::Key(rel) == DisabledSet::Key(file.relDir);
-        if (ImGui::MenuItem(label, nullptr, there, !there)) {
-            if (copy) {
-                const std::string where = rel.empty() ? "loose textures" : "\"" + WideToUtf8(rel) + "\"";
-                Defer([this, file, rel, where] { Status(library_.CopyTo(file, rel), "Copied to " + where); });
-            } else {
-                Defer([this, file, rel] { Status(library_.MoveTo(file, rel), "Moved"); });
-            }
-        }
+        // Ticked and greyed where the textures already are (copying: any file of the same name).
+        const bool there = std::all_of(files.begin(), files.end(), [&](const TextureFile* f) {
+            return copy ? fs::exists(library_.moddedFolder() / rel / f->path.filename())
+                        : DisabledSet::Key(rel) == DisabledSet::Key(f->relDir);
+        });
+        if (ImGui::MenuItem(label, nullptr, there, !there))
+            Defer([this, files = Copies(files), rel, copy] { MoveOrCopy(files, rel, copy); });
         ImGui::Unindent(float(depth) * 10.0f);
     };
     item("(loose, no mod)", L"", 0);
@@ -867,33 +929,114 @@ void App::DrawMoveMenu(const TextureFile& file, bool copy) {
         item(f.name.c_str(), f.rel, f.depth - 1);
         ImGui::PopID();
     }
-    ImGui::EndMenu();
 }
 
-void App::AddDumpToMod(const TextureFile& dump, const std::wstring& rel) {
+void App::MoveOrCopy(const std::vector<TextureFile>& files, const std::wstring& rel, bool copy) {
     const std::string where = rel.empty() ? "loose textures" : "\"" + WideToUtf8(rel) + "\"";
-    if (fs::exists(library_.TargetPath(dump.hash, "", rel))) {
-        Status(where + " already has a texture for " + std::to_string(dump.hash), "");
+    std::string error;
+    size_t done = 0, failed = 0;
+    const std::string saveError = library_.Batch([&] {
+        for (const TextureFile& f : files) {
+            if (!copy && DisabledSet::Key(rel) == DisabledSet::Key(f.relDir)) continue;  // already there
+            const std::string e = copy ? library_.CopyTo(f, rel) : library_.MoveTo(f, rel);
+            if (!e.empty()) {
+                error = e;
+                ++failed;
+                continue;
+            }
+            ++done;
+            if (copy) continue;
+            // Moved ones stay selected (PruneSelection matches the new paths up after the rescan).
+            const fs::path target = library_.moddedFolder() / rel / f.path.filename();
+            if (picked_.erase(f.path.native())) picked_.insert(target.native());
+            if (selection_ && selection_->path == f.path) selection_->path = target;
+        }
+    });
+    if (failed && files.size() > 1)
+        error = std::to_string(failed) + " of " + std::to_string(files.size()) + " could not be " +
+                (copy ? "copied" : "moved") + ": " + error;
+    if (error.empty()) error = saveError;
+    const std::string what = files.size() == 1 ? "" : std::to_string(done) + " textures ";
+    Status(error, (copy ? "Copied " : "Moved ") + what + "to " + where);
+}
+
+void App::SetEnabled(const std::vector<TextureFile>& mods, bool on) {
+    std::string error;
+    size_t changed = 0;
+    const std::string saveError = library_.Batch([&] {
+        for (const TextureFile& m : mods) {
+            if (m.selfDisabled != on) continue;  // already that way
+            const std::string e = library_.SetEnabled(m, on);
+            if (e.empty()) ++changed;
+            else error = e;
+        }
+    });
+    Status(error.empty() ? saveError : error,
+           (on ? "Turned on " : "Turned off ") + std::to_string(changed) + " texture(s)");
+}
+
+void App::Recycle(const std::vector<TextureFile>& files) {
+    std::string error;
+    size_t failed = 0;
+    const std::string saveError = library_.Batch([&] {
+        for (const TextureFile& f : files)
+            if (const std::string e = library_.Delete(f); !e.empty()) {
+                error = e;
+                ++failed;
+            }
+    });
+    if (failed && files.size() > 1)
+        error = std::to_string(failed) + " of " + std::to_string(files.size()) +
+                " textures could not be moved to the Recycle Bin (in use by the game?).";
+    Status(error.empty() ? saveError : error,
+           files.size() == 1 ? "Moved to Recycle Bin"
+                             : "Moved " + std::to_string(files.size()) + " textures to the Recycle Bin");
+}
+
+void App::AddDumpsToMod(const std::vector<TextureFile>& dumps, const std::wstring& rel) {
+    const std::string where = rel.empty() ? "loose textures" : "\"" + WideToUtf8(rel) + "\"";
+    if (dumps.size() == 1 && fs::exists(library_.TargetPath(dumps[0].hash, "", rel))) {
+        Status(where + " already has a texture for " + std::to_string(dumps[0].hash), "");
         return;
     }
-    const std::string e = library_.Import(dump.path, dump.hash, "", false, rel);
-    Status(e, "Added " + std::to_string(dump.hash) + " to " + where +
-                  ". It looks the same in-game until you edit that copy.");
+    std::string error;
+    size_t added = 0, already = 0;
+    library_.Batch([&] {
+        for (const TextureFile& d : dumps) {
+            if (fs::exists(library_.TargetPath(d.hash, "", rel))) {
+                ++already;
+                continue;
+            }
+            const std::string e = library_.Import(d.path, d.hash, "", false, rel);
+            if (e.empty()) ++added;
+            else error = e;
+        }
+    });
+    if (dumps.size() == 1) {
+        Status(error, "Added " + std::to_string(dumps[0].hash) + " to " + where +
+                          ". It looks the same in-game until you edit that copy.");
+        return;
+    }
+    Status(error, "Added " + std::to_string(added) + " textures to " + where +
+                      (already ? " (" + std::to_string(already) + " were already there)" : "") +
+                      ". They look the same in-game until you edit the copies.");
 }
 
-void App::DrawAddToModMenu(const TextureFile& dump) {
+void App::DrawAddToModMenu(const std::vector<const TextureFile*>& dumps) {
     if (!ImGui::BeginMenu("Add to mod")) return;
-    DrawAddToModItems(dump);
+    DrawAddToModItems(dumps);
     ImGui::EndMenu();
 }
 
-void App::DrawAddToModItems(const TextureFile& dump) {
-    // A copy of the dump goes into the mod as <hash>.dds, ready to be edited.
+void App::DrawAddToModItems(const std::vector<const TextureFile*>& dumps) {
+    // A copy of each dump goes into the mod as <hash>.dds, ready to be edited.
     auto item = [&](const char* label, const std::wstring& rel, int depth) {
         ImGui::Indent(float(depth) * 10.0f);
-        const bool already = fs::exists(library_.TargetPath(dump.hash, "", rel));
+        const bool already = std::all_of(dumps.begin(), dumps.end(), [&](const TextureFile* d) {
+            return fs::exists(library_.TargetPath(d->hash, "", rel));
+        });
         if (ImGui::MenuItem(label, nullptr, already, !already))
-            Defer([this, dump, rel] { AddDumpToMod(dump, rel); });
+            Defer([this, dumps = Copies(dumps), rel] { AddDumpsToMod(dumps, rel); });
         ImGui::Unindent(float(depth) * 10.0f);
     };
     for (const ModFolder& f : library_.folders()) {
@@ -904,7 +1047,7 @@ void App::DrawAddToModItems(const TextureFile& dump) {
     if (!library_.folders().empty()) ImGui::Separator();
     item("(loose, no mod)", L"", 0);
     if (ImGui::MenuItem("New mod...")) {
-        addAfterCreate_ = dump;
+        addAfterCreate_ = Copies(dumps);
         newFolderParent_.clear();
         newFolderName_[0] = 0;
         openNewFolderPopup_ = true;
@@ -918,8 +1061,9 @@ void App::DrawFolderPopups() {
     }
     if (ImGui::BeginPopupModal("New folder", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
         if (newFolderParent_.empty())
-            ImGui::TextUnformatted(addAfterCreate_ ? "Name of the new mod (the texture is added to it):"
-                                                   : "Name of the new mod:");
+            ImGui::TextUnformatted(addAfterCreate_.size() > 1   ? "Name of the new mod (the textures are added to it):"
+                                   : !addAfterCreate_.empty() ? "Name of the new mod (the texture is added to it):"
+                                                              : "Name of the new mod:");
         else ImGui::Text("New category inside %s:", WideToUtf8(newFolderParent_).c_str());
         if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
         ImGui::SetNextItemWidth(300);
@@ -928,7 +1072,7 @@ void App::DrawFolderPopups() {
         if (ImGui::Button("Create", ImVec2(120, 0)) || enter) {
             const std::wstring parent = newFolderParent_;
             const std::string name = newFolderName_;
-            std::optional<TextureFile> add = std::exchange(addAfterCreate_, std::nullopt);
+            std::vector<TextureFile> add = std::exchange(addAfterCreate_, {});
             Defer([this, parent, name, add] {
                 const std::string e = library_.CreateFolder(parent, name);
                 // Same cleanup of the name as the folder on disk got.
@@ -943,13 +1087,13 @@ void App::DrawFolderPopups() {
                 }
                 modView_ = ModView::Folder;
                 viewFolder_ = rel;
-                if (add) AddDumpToMod(*add, rel);
+                if (!add.empty()) AddDumpsToMod(add, rel);
             });
             ImGui::CloseCurrentPopup();
         }
         ImGui::SameLine();
         if (ImGui::Button("Cancel", ImVec2(120, 0))) {
-            addAfterCreate_.reset();
+            addAfterCreate_.clear();
             ImGui::CloseCurrentPopup();
         }
         ImGui::EndPopup();
@@ -981,11 +1125,21 @@ void App::DrawFolderPopups() {
                 const std::wstring viewKey = DisabledSet::Key(viewFolder_);
                 if (viewKey == fromKey || viewKey.starts_with(fromKey + L"/"))
                     viewFolder_ = to + viewFolder_.substr(from.size());
-                if (selection_ && selection_->isMod) {
-                    const fs::path rel = selection_->path.lexically_relative(library_.moddedFolder());
+                auto renamed = [&](fs::path& path) {
+                    const fs::path rel = path.lexically_relative(library_.moddedFolder());
                     const std::wstring relSlashed = DisabledSet::Slashed(rel);
                     if (DisabledSet::Key(rel).starts_with(fromKey + L"/"))
-                        selection_->path = library_.moddedFolder() / (to + relSlashed.substr(from.size()));
+                        path = library_.moddedFolder() / (to + relSlashed.substr(from.size()));
+                };
+                if (selection_ && selection_->isMod) {
+                    renamed(selection_->path);
+                    std::unordered_set<std::wstring> picked;
+                    for (const std::wstring& p : picked_) {
+                        fs::path path = p;
+                        renamed(path);
+                        picked.insert(path.native());
+                    }
+                    picked_ = std::move(picked);
                 }
             });
             ImGui::CloseCurrentPopup();
@@ -1104,7 +1258,7 @@ void App::DrawDeleteDumpsPopup() {
             }
             return failed;
         });
-        if (selection_ && !selection_->isMod) selection_.reset();
+        if (selection_ && !selection_->isMod) ClearSelection();
         ImGui::CloseCurrentPopup();
     }
     ImGui::PopStyleColor(2);
@@ -1252,6 +1406,30 @@ void App::DrawGrid(const std::vector<TextureFile>& files, bool isMod) {
         if (MatchesFilter(f)) visible.push_back(&f);
     }
     SortVisible(visible, isMod);
+
+    // The details panel shows one of the selected textures: kept while it is still selected,
+    // else the first one shown.
+    auto follow = [&] {
+        if (selection_ && picked_.count(selection_->path.native())) return;
+        selection_.reset();
+        for (const TextureFile* f : visible)
+            if (picked_.count(f->path.native())) {
+                selection_ = Selection{f->path, isMod};
+                break;
+            }
+    };
+    // A selection of several covers only what is shown: changing the view or the search drops the
+    // rest (all of it when nothing is shown).
+    if (picked_.size() > 1) {
+        std::unordered_set<std::wstring> shown;
+        for (const TextureFile* f : visible)
+            if (picked_.count(f->path.native())) shown.insert(f->path.native());
+        if (shown.size() < picked_.size()) {
+            picked_ = std::move(shown);
+            follow();
+        }
+    }
+
     if (visible.empty() && filter_[0]) {
         ImGui::TextColored(kDimColor, "Nothing here matches \"%s\".", filter_);
         const size_t other = CountMatches(isMod ? library_.dumps() : library_.mods());
@@ -1275,24 +1453,55 @@ void App::DrawGrid(const std::vector<TextureFile>& files, bool isMod) {
         return;
     }
 
+    // Several can be selected: Ctrl+click, Shift+click, dragging a box, Ctrl+A. Requests use
+    // indices into `visible`.
+    auto apply = [&](ImGuiMultiSelectIO* io) {
+        for (const ImGuiSelectionRequest& r : io->Requests) {
+            if (r.Type == ImGuiSelectionRequestType_SetAll) {
+                picked_.clear();
+                if (r.Selected)
+                    for (const TextureFile* f : visible) picked_.insert(f->path.native());
+            } else if (r.Type == ImGuiSelectionRequestType_SetRange) {
+                const auto last = std::min<ImGuiSelectionUserData>(r.RangeLastItem, ImGuiSelectionUserData(visible.size()) - 1);
+                for (ImGuiSelectionUserData i = r.RangeFirstItem; i <= last; ++i) {
+                    if (r.Selected) picked_.insert(visible[size_t(i)]->path.native());
+                    else picked_.erase(visible[size_t(i)]->path.native());
+                }
+            }
+        }
+        if (!io->Requests.empty()) follow();
+    };
+
     const ImGuiStyle& style = ImGui::GetStyle();
     const float cell = thumbSize_ + style.ItemSpacing.x;
     const int perRow = std::max(1, int((ImGui::GetContentRegionAvail().x + style.ItemSpacing.x) / cell));
     const int rows = int((visible.size() + perRow - 1) / perRow);
     const float rowHeight = thumbSize_ + ImGui::GetTextLineHeight() * 2 + style.ItemSpacing.y * 2;
 
+    ImGuiMultiSelectIO* ms = ImGui::BeginMultiSelect(ImGuiMultiSelectFlags_ClearOnEscape |
+                                                         ImGuiMultiSelectFlags_ClearOnClickVoid |
+                                                         ImGuiMultiSelectFlags_BoxSelect2d,
+                                                     int(picked_.size()), int(visible.size()));
+    apply(ms);
     ImGuiListClipper clipper;  // only rows on screen are laid out and thumbnailed
     clipper.Begin(rows, rowHeight);
+    if (ms->RangeSrcItem >= 0 && ms->RangeSrcItem < ImGuiSelectionUserData(visible.size()))
+        clipper.IncludeItemByIndex(int(ms->RangeSrcItem) / perRow);  // Shift+click needs it laid out
     while (clipper.Step()) {
         for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; ++row) {
             for (int col = 0; col < perRow; ++col) {
                 const size_t i = size_t(row) * perRow + col;
                 if (i >= visible.size()) break;
                 if (col) ImGui::SameLine();
+                ImGui::SetNextItemSelectionUserData(ImGuiSelectionUserData(i));
                 DrawCard(*visible[i], isMod, thumbSize_);
             }
         }
     }
+    apply(ImGui::EndMultiSelect());
+
+    if (!picked_.empty() && ImGui::Shortcut(ImGuiKey_Delete))
+        Defer([this, files = Copies(Picked())] { Recycle(files); });
 }
 
 void App::DrawCard(const TextureFile& file, bool isMod, float size) {
@@ -1300,9 +1509,14 @@ void App::DrawCard(const TextureFile& file, bool isMod, float size) {
     const ImVec2 pos = ImGui::GetCursorScreenPos();
     const float textH = ImGui::GetTextLineHeight();
     const ImVec2 cardSize(size, size + textH * 2 + 4);
-    const bool clicked = ImGui::InvisibleButton("card", cardSize);
+    const bool selected = picked_.count(file.path.native()) > 0;
+    // A selectable for the multi-selection; the card draws its own highlight (the border below).
+    ImGui::PushStyleColor(ImGuiCol_Header, 0);
+    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, 0);
+    ImGui::PushStyleColor(ImGuiCol_HeaderActive, 0);
+    const bool clicked = ImGui::Selectable("##card", selected, ImGuiSelectableFlags_None, cardSize);
+    ImGui::PopStyleColor(3);
     const bool hovered = ImGui::IsItemHovered();
-    const bool selected = selection_ && selection_->path == file.path;
     if (clicked) selection_ = Selection{file.path, isMod};
 
     ImDrawList* dl = ImGui::GetWindowDrawList();
@@ -1367,42 +1581,72 @@ void App::DrawCard(const TextureFile& file, bool isMod, float size) {
     dl->PopClipRect();
 
     if (ImGui::BeginPopupContextItem("ctx")) {
-        selection_ = Selection{file.path, isMod};
-        if (isMod) {
-            if (ImGui::MenuItem(file.selfDisabled ? "Turn on" : "Turn off")) Defer([this, file] { ToggleEnabled(file); });
-            DrawMoveMenu(file, false);
-            DrawMoveMenu(file, true);
-            const bool encrypted = info && info->encrypted;
-            if (ImGui::MenuItem("Open in editor", nullptr, false, !encrypted)) OpenWithShell(file.path);
-            if (encrypted) ImGui::SetItemTooltip("Encrypted (resorep1) textures can't be opened by image editors.");
-        } else {
-            if (ImGui::MenuItem("Replace with .dds...")) Defer([this, hash = file.hash] { ReplaceDump(hash); });
-            DrawAddToModMenu(file);
-            if (ImGui::MenuItem("Open in editor")) OpenWithShell(file.path);
-        }
-        if (ImGui::MenuItem("Show in Explorer")) ShowInExplorer(file.path);
-        const bool encryptedFile = info && info->encrypted;
-        if (ImGui::MenuItem("Export PNG...", nullptr, false, !encryptedFile)) Defer([this, file] { ExportAsPng(file); });
-        ImGui::SetItemTooltip(encryptedFile ? "Encrypted (resorep1) textures can't be exported."
-                                            : "Full resolution, turned and mirrored the way the preview shows it.");
-        ImGui::Separator();
-        if (ImGui::MenuItem("Edit label")) focusLabel_ = true;
-        const bool isNormal = KindOf(file) == TextureKind::Normal;
-        if (ImGui::MenuItem(isNormal ? "Find its color texture" : "Find its normal map"))
-            OpenSimilar(file, isMod, isNormal ? SimilarMode::Colors : SimilarMode::Normals);
-        if (ImGui::MenuItem("Find similar textures")) OpenSimilar(file, isMod, SimilarMode::Any);
-        ImGui::Separator();
-        if (ImGui::MenuItem("Move to Recycle Bin"))
-            Defer([this, file] { Status(library_.Delete(file), "Moved to Recycle Bin"); });
+        // Right-clicking one of several selected acts on all of them.
+        if (selected && picked_.size() > 1) DrawSelectionMenu(isMod);
+        else DrawCardMenu(file, isMod, info);
         ImGui::EndPopup();
     }
     ImGui::PopID();
 }
 
+void App::DrawCardMenu(const TextureFile& file, bool isMod, const TextureInfo* info) {
+    if (!selection_ || selection_->path != file.path) Select(file.path, isMod);
+    if (isMod) {
+        if (ImGui::MenuItem(file.selfDisabled ? "Turn on" : "Turn off")) Defer([this, file] { ToggleEnabled(file); });
+        DrawMoveMenu({&file}, false);
+        DrawMoveMenu({&file}, true);
+        const bool encrypted = info && info->encrypted;
+        if (ImGui::MenuItem("Open in editor", nullptr, false, !encrypted)) OpenWithShell(file.path);
+        if (encrypted) ImGui::SetItemTooltip("Encrypted (resorep1) textures can't be opened by image editors.");
+    } else {
+        if (ImGui::MenuItem("Replace with .dds...")) Defer([this, hash = file.hash] { ReplaceDump(hash); });
+        DrawAddToModMenu({&file});
+        if (ImGui::MenuItem("Open in editor")) OpenWithShell(file.path);
+    }
+    if (ImGui::MenuItem("Show in Explorer")) ShowInExplorer(file.path);
+    const bool encryptedFile = info && info->encrypted;
+    if (ImGui::MenuItem("Export PNG...", nullptr, false, !encryptedFile)) Defer([this, file] { ExportAsPng(file); });
+    ImGui::SetItemTooltip(encryptedFile ? "Encrypted (resorep1) textures can't be exported."
+                                        : "Full resolution, turned and mirrored the way the preview shows it.");
+    ImGui::Separator();
+    if (ImGui::MenuItem("Edit label")) focusLabel_ = true;
+    const bool isNormal = KindOf(file) == TextureKind::Normal;
+    if (ImGui::MenuItem(isNormal ? "Find its color texture" : "Find its normal map"))
+        OpenSimilar(file, isMod, isNormal ? SimilarMode::Colors : SimilarMode::Normals);
+    if (ImGui::MenuItem("Find similar textures")) OpenSimilar(file, isMod, SimilarMode::Any);
+    ImGui::Separator();
+    if (ImGui::MenuItem("Move to Recycle Bin", "Del")) Defer([this, file] { Recycle({file}); });
+}
+
+void App::DrawSelectionMenu(bool isMod) {
+    const std::vector<const TextureFile*> files = Picked();
+    ImGui::TextColored(kDimColor, "%zu textures selected", files.size());
+    ImGui::Separator();
+    if (isMod) {
+        const bool anyOff = std::any_of(files.begin(), files.end(), [](const TextureFile* f) { return f->selfDisabled; });
+        const bool anyOn = std::any_of(files.begin(), files.end(), [](const TextureFile* f) { return !f->selfDisabled; });
+        if (ImGui::MenuItem("Turn on", nullptr, false, anyOff)) Defer([this, c = Copies(files)] { SetEnabled(c, true); });
+        if (ImGui::MenuItem("Turn off", nullptr, false, anyOn)) Defer([this, c = Copies(files)] { SetEnabled(c, false); });
+        DrawMoveMenu(files, false);
+        DrawMoveMenu(files, true);
+    } else {
+        DrawAddToModMenu(files);
+    }
+    ImGui::Separator();
+    if (ImGui::MenuItem("Move to Recycle Bin", "Del")) Defer([this, c = Copies(files)] { Recycle(c); });
+}
+
 void App::DrawDetails() {
+    if (picked_.size() > 1) {
+        if (const std::vector<const TextureFile*> files = Picked(); files.size() > 1) {
+            DrawSelectionDetails(files);
+            return;
+        }
+    }
     const TextureFile* file = FindSelected();
     if (!file) {
         ImGui::TextColored(kDimColor, "Select a texture to see details.");
+        ImGui::TextColored(kDimColor, "Ctrl+click, Shift+click or drag a box to select several.");
         ImGui::Spacing();
         ImGui::TextWrapped(tab_ == Tab::Mods
                                ? "Mods are .dds files named after the hash of the game texture they replace."
@@ -1585,7 +1829,7 @@ void App::DrawDetails() {
         if (ImGui::Button("Add to mod...", ImVec2(-1, 0))) ImGui::OpenPopup("addtomod");
         ImGui::SetItemTooltip("Copies this texture into a mod as <hash>.dds, ready to edit.");
         if (ImGui::BeginPopup("addtomod")) {
-            DrawAddToModItems(*file);
+            DrawAddToModItems({file});
             ImGui::EndPopup();
         }
         if (ImGui::Button("Open in editor", ImVec2(width * 0.5f - 4, 0))) OpenWithShell(file->path);
@@ -1609,11 +1853,92 @@ void App::DrawDetails() {
             if (ImGui::Button("Go to mod")) {
                 tab_ = Tab::Mods;
                 modView_ = ModView::All;
-                selection_ = Selection{m.path, true};
+                Select(m.path, true);
             }
             break;
         }
     }
+}
+
+void App::DrawSelectionDetails(const std::vector<const TextureFile*>& files) {
+    const bool isMod = selection_->isMod;
+    const float width = ImGui::GetContentRegionAvail().x;
+    uint64_t bytes = 0;
+    size_t off = 0, categoryOff = 0;  // turned off themselves / on, but their mod or category is off
+    for (const TextureFile* f : files) {
+        bytes += f->size;
+        off += f->selfDisabled;
+        categoryOff += !f->selfDisabled && !f->enabled;
+    }
+    ImGui::SeparatorText(isMod ? "Selected mods" : "Selected dumps");
+    ImGui::Text("%zu textures, %s", files.size(), FormatBytes(bytes).c_str());
+    if (isMod) {
+        ImGui::Text("%zu on, %zu turned off", files.size() - off - categoryOff, off);
+        if (categoryOff)
+            ImGui::TextColored(kDimColor, "%zu more off because their mod or category is off", categoryOff);
+    }
+    ImGui::Spacing();
+
+    const ImVec2 half(width * 0.5f - 4, 0);
+    if (isMod) {
+        ImGui::BeginDisabled(off == 0);
+        if (ImGui::Button("Turn all on", half)) Defer([this, c = Copies(files)] { SetEnabled(c, true); });
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::BeginDisabled(off == files.size());
+        if (ImGui::Button("Turn all off", ImVec2(-1, 0))) Defer([this, c = Copies(files)] { SetEnabled(c, false); });
+        ImGui::EndDisabled();
+        if (ImGui::Button("Move to...", half)) ImGui::OpenPopup("moveto");
+        ImGui::SameLine();
+        if (ImGui::Button("Copy to...", ImVec2(-1, 0))) ImGui::OpenPopup("copyto");
+        if (ImGui::BeginPopup("moveto")) {
+            DrawMoveItems(files, false);
+            ImGui::EndPopup();
+        }
+        if (ImGui::BeginPopup("copyto")) {
+            DrawMoveItems(files, true);
+            ImGui::EndPopup();
+        }
+    } else {
+        if (ImGui::Button("Add to mod...", ImVec2(-1, 0))) ImGui::OpenPopup("addtomod");
+        ImGui::SetItemTooltip("Copies these textures into a mod as <hash>.dds, ready to edit.");
+        if (ImGui::BeginPopup("addtomod")) {
+            DrawAddToModItems(files);
+            ImGui::EndPopup();
+        }
+    }
+    if (ImGui::Button("Move to Recycle Bin", half)) Defer([this, c = Copies(files)] { Recycle(c); });
+    ImGui::SameLine();
+    if (ImGui::Button("Clear selection", ImVec2(-1, 0))) {
+        ClearSelection();
+        return;
+    }
+    ImGui::TextColored(kDimColor, "Right-click a selected texture for the same actions.");
+
+    // Small previews of the selection; clicking one selects just that one.
+    ImGui::SeparatorText("Textures");
+    constexpr size_t kMaxShown = 60;
+    const float box = 56.0f;
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const int perRow = std::max(1, int((width + style.ItemSpacing.x) / (box + style.ItemSpacing.x)));
+    for (size_t i = 0; i < files.size() && i < kMaxShown; ++i) {
+        const TextureFile& f = *files[i];
+        if (i % perRow) ImGui::SameLine();
+        ImGui::PushID(f.path.c_str());
+        const ImVec2 at = ImGui::GetCursorScreenPos();
+        if (ImGui::InvisibleButton("thumb", ImVec2(box, box))) Select(f.path, isMod);
+        ImGui::SetItemTooltip("%u%s%s", f.hash, DisplayLabel(f).empty() ? "" : "  ", DisplayLabel(f).c_str());
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        dl->AddRectFilled(at, ImVec2(at.x + box, at.y + box), IM_COL32(28, 28, 32, 255), 3.0f);
+        const TextureInfo* info = nullptr;
+        // Same size as the grid's, so these come from the thumbnails it already made.
+        if (ID3D11ShaderResourceView* srv = thumbs_.Get(f.path, f.modified, uint32_t(thumbSize_), &info); srv && info)
+            DrawPreview(dl, srv, info->width, info->height, ImVec2(at.x + 2, at.y + 2), ImVec2(box - 4, box - 4),
+                        (isMod && !f.enabled) ? IM_COL32(255, 255, 255, 70) : IM_COL32_WHITE);
+        if (ImGui::IsItemHovered()) dl->AddRect(at, ImVec2(at.x + box, at.y + box), IM_COL32(120, 120, 130, 255), 3.0f);
+        ImGui::PopID();
+    }
+    if (files.size() > kMaxShown) ImGui::TextColored(kDimColor, "and %zu more", files.size() - kMaxShown);
 }
 
 void App::DrawLabelEditor(const TextureFile& file, float width) {
@@ -1720,7 +2045,7 @@ void App::DrawSimilarWindow() {
     if (show) {
         tab_ = show->isMod ? Tab::Mods : Tab::Dumps;
         modView_ = ModView::All;
-        selection_ = Selection{show->path, show->isMod};
+        Select(show->path, show->isMod);
     }
     if (!open) similar_.reset();
 }

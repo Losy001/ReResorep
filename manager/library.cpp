@@ -7,6 +7,7 @@
 #include <system_error>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 
 #include "dds.h"
 #include "mod_package.h"
@@ -182,6 +183,10 @@ bool Library::RefreshIfChanged() {
 }
 
 void Library::Refresh() {
+    if (batching_) {
+        refreshHeld_ = true;
+        return;
+    }
     mods_.clear();
     dumps_.clear();
     folders_.clear();
@@ -298,6 +303,10 @@ const fs::path* Library::ModFor(uint32_t gameHash) const {
 }
 
 std::string Library::SaveState() {
+    if (batching_) {
+        saveHeld_ = true;
+        return {};
+    }
     const bool ok = disabled_.Save(modded_);
     Refresh();
     return ok ? std::string() : "Could not write " + WideToUtf8(DisabledSet::kFileName);
@@ -375,6 +384,25 @@ std::string Library::DeleteFolder(const std::wstring& rel) {
     if (ok) disabled_.RemoveUnder(rel);
     const std::string e = SaveState();
     return ok ? e : "Could not move the folder to the Recycle Bin.";
+}
+
+std::string Library::Batch(const std::function<void()>& changes) {
+    // Cleared even if `changes` throws, or the library would never save or rescan again.
+    struct Guard {
+        bool& flag;
+        ~Guard() { flag = false; }
+    };
+    batching_ = true;
+    {
+        Guard guard{batching_};
+        changes();
+    }
+    if (std::exchange(saveHeld_, false)) {
+        refreshHeld_ = false;
+        return SaveState();  // rescans too
+    }
+    if (std::exchange(refreshHeld_, false)) Refresh();
+    return {};
 }
 
 fs::path Library::TargetPath(uint32_t hash, const std::string& label, const std::wstring& relDir) const {
