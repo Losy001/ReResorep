@@ -100,6 +100,7 @@ void Runtime::LoadConfig() {
     cfg->logEnabled = ini.GetBool(keys::kLogEnabled, false);
     cfg->logDebug = ini.GetOr(keys::kLogLevel, "") == "debug";
     cfg->logFile = ResolveFolder(ini.GetOr(keys::kLogFile, ""), L"dll.log");
+    cfg->gameSha256 = ini.GetOr(keys::kGameSha256, "");
 
     EnterCriticalSection(&logLock_);
     if (logFile_) {
@@ -141,7 +142,8 @@ void Runtime::StartRedump() {
 
 void Runtime::Rescan() {
     auto idx = std::make_shared<TextureIndex>();
-    idx->Scan(config()->moddedFolder);
+    const auto cfg = config();
+    idx->Scan(cfg->moddedFolder, cfg->gameSha256);
     index_.store(std::move(idx), std::memory_order_release);
 }
 

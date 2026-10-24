@@ -27,7 +27,7 @@ add_executable(ReResorep WIN32
     manager.manifest
     app.rc
 )
-target_link_libraries(ReResorep PRIVATE resorep_core imgui d3d11 dxgi d3dcompiler shell32 ole32 version dwmapi windowscodecs)
+target_link_libraries(ReResorep PRIVATE resorep_core imgui d3d11 dxgi d3dcompiler shell32 ole32 version dwmapi windowscodecs bcrypt)
 set_target_properties(ReResorep PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${RERESOREP_BIN}
     RUNTIME_OUTPUT_DIRECTORY_RELEASE ${RERESOREP_BIN}

@@ -89,6 +89,38 @@ Changes reach a running game within about a second. The proxy watches the modded
 settings file. Textures the game has already loaded keep their old data until it reloads them
 (for example on the next map load).
 
+### Several Siege builds
+
+Every Siege build is a `RainbowSix.exe`, so ReResorep tells them apart by the SHA-256 of the exe.
+The **Games** tab shows the first 8 hex digits of each game's hash. It works the hash out in the
+background when a game is added, and again whenever the exe changes.
+
+- **Default profile:** unless you change it, every game uses the shared folders from the
+  **Settings** tab, as before.
+- **Own folders:** tick *Own folders* on a game's row to give it its own mods and dumps in
+  `games\<first 16 hex digits of its hash>\modded` and `\original`, next to `ReResorep.exe`.
+  The proxy in that game picks up the change within a second.
+- **Game picker:** the picker at the top of the **Mods** and **Dumps** tabs chooses which
+  folders those tabs show: *Default (shared folders)*, or a game that has its own folders.
+  *Redump* only goes to games that use the folders being shown.
+- **Which build a mod is for:** each mod can carry a `!reresorep_game.ini` in its folder with
+  `game_exe_sha256=<hash>`. The `!` keeps it at the top of the folder in Explorer. The app
+  doesn't list it among the mod's textures. A game skips mods marked for a different build,
+  which matters in the shared Default folders. Mods without the file apply to every game, so
+  existing mods keep working.
+  - Mods created or imported while a game's own folders are shown are marked for that game.
+  - In the Default profile, right-click a mod and choose **Made for** to pick a game, or
+    *Any game*.
+  - An exported package records the game too, and importing it into the Default profile keeps it,
+    unless you merge it into a mod that is already marked.
+- **Duplicates per build:** when several active mods replace the same hash, the app shows which one
+  each build's game uses, by the same rule as the proxy. A mod marked for build A doesn't make an
+  unmarked one "unused" for the other builds.
+- **A patched or replaced exe** gets a new hash. Its game keeps its own folder, which is named
+  after the hash it had when *Own folders* was ticked. The Games tab flags *exe changed*, and its
+  **Fix…** button either moves the marks of every mod made for the old exe to the new one (same
+  build, patched) or leaves them alone (a different build).
+
 ## Building
 
 Needs Visual Studio 2022 with the C++ workload (it includes CMake).

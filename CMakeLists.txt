@@ -62,6 +62,12 @@ target_link_libraries(proxy_test PRIVATE resorep_core)
 add_dependencies(proxy_test proxy)
 add_test(NAME proxy_test COMMAND proxy_test $<TARGET_FILE:proxy>)
 
+add_executable(manager_test tests/manager_test.cpp manager/library.cpp manager/games.cpp manager/win_util.cpp
+    manager/theme.cpp)
+target_include_directories(manager_test PRIVATE manager ${RERESOREP_GENERATED})
+target_link_libraries(manager_test PRIVATE resorep_core imgui shell32 ole32 version bcrypt)
+add_test(NAME manager_test COMMAND manager_test)
+
 add_executable(analyzer_test tests/analyzer_test.cpp manager/analyzer.cpp)
 target_include_directories(analyzer_test PRIVATE manager)
 target_link_libraries(analyzer_test PRIVATE resorep_core d3d11 d3dcompiler)

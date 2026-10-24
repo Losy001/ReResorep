@@ -112,9 +112,121 @@ App::App(HWND hwnd, ID3D11Device* device) : hwnd_(hwnd), thumbs_(device) {
     ApplyAccentColor(settings_.accentColor);
     labels_.Load(LabelsFile());
     analyzer_ = std::make_unique<TextureAnalyzer>(ExeDirectory() / L"texture_analysis.cache");
-    library_.SetFolders(settings_.moddedFolder, settings_.originalFolder);
-    QueueAnalysis();
     RefreshGames();
+    ApplyProfile();
+}
+
+const GameState* App::ProfileGame() const {
+    if (settings_.profile.empty()) return nullptr;
+    for (const GameState& g : games_)
+        if (GameKey(g.exe) == GameKey(settings_.profile)) return g.ownFolders && !g.sha256.empty() ? &g : nullptr;
+    return nullptr;
+}
+
+void App::ApplyProfile() {
+    const GameState* game = ProfileGame();
+    const auto [modded, original] =
+        game ? settings_.FoldersFor(game->exe) : std::pair{settings_.moddedFolder, settings_.originalFolder};
+    const std::string build = game ? game->sha256 : std::string();
+    if (modded == library_.moddedFolder() && original == library_.originalFolder()) {
+        library_.SetGame(build);
+        return;
+    }
+    library_.SetFolders(modded, original, build);
+    selection_.reset();
+    modView_ = ModView::All;
+    QueueAnalysis();
+}
+
+void App::DrawProfilePicker() {
+    const GameState* current = ProfileGame();
+    ImGui::SetNextItemWidth(260);
+    if (ImGui::BeginCombo("##profile", current ? GameLabel(*current).c_str() : "Default (shared folders)")) {
+        auto pick = [&](const char* label, const fs::path& exe, bool selected) {
+            if (ImGui::Selectable(label, selected) && !selected) {
+                Defer([this, exe] {
+                    settings_.profile = exe;
+                    settings_.Save();
+                    ApplyProfile();
+                });
+            }
+        };
+        pick("Default (shared folders)", {}, !current);
+        for (const GameState& g : games_)
+            if (g.ownFolders && !g.sha256.empty()) {
+                ImGui::PushID(g.exe.c_str());
+                pick(GameLabel(g).c_str(), g.exe, current == &g);
+                ImGui::PopID();
+            }
+        ImGui::EndCombo();
+    }
+    ImGui::SetItemTooltip("Which folders these tabs show: the Default ones (Settings tab), or a game's own.\n"
+                          "Give a game its own folders on the Games tab.\n\nMods:  %s\nDumps: %s",
+                          ToUtf8(library_.moddedFolder()).c_str(), ToUtf8(library_.originalFolder()).c_str());
+    ImGui::SameLine();
+}
+
+void App::SetOwnFolders(const fs::path& exe, bool own) {
+    if (own) settings_.ownFolders[GameKey(exe)] = settings_.ExeSha(exe).substr(0, 16);
+    else settings_.ownFolders.erase(GameKey(exe));
+    if (own) settings_.profile = exe;  // show the new folders right away
+    std::string error = settings_.Save() ? "" : "Could not save reresorep.ini";
+    for (const GameState& g : games_)
+        if (GameKey(g.exe) == GameKey(exe) && (g.status == ProxyStatus::Installed || g.status == ProxyStatus::Outdated))
+            if (const std::string e = WriteGameSettings(exe, settings_); !e.empty()) error = e;
+    RefreshGames();
+    ApplyProfile();
+    const auto [modded, original] = settings_.FoldersFor(exe);
+    Status(error, ToUtf8(exe.parent_path().filename()) + " now uses " + ToUtf8(modded.parent_path()) +
+                      (own ? "" : " (Default)") + ". A running game picks this up within a second.");
+}
+
+std::string App::ModGameName(const std::string& sha) const {
+    for (const GameState& g : games_)
+        if (g.sha256 == sha) return GameLabel(g);
+    return "a game not in your list (" + sha.substr(0, 8) + ")";
+}
+
+void App::SetModGame(const std::wstring& rel, const GameState* game) {
+    const fs::path folder = library_.moddedFolder() / rel;
+    const bool ok = WriteModGame(folder, game ? game->sha256 : std::string(), game ? GameLabel(*game) : std::string());
+    library_.Refresh();
+    Status(ok ? "" : "Could not write " + WideToUtf8(kModGameFile),
+           game ? "\"" + WideToUtf8(rel) + "\" is now only for " + GameLabel(*game) : "\"" + WideToUtf8(rel) + "\" is now for any game");
+}
+
+void App::ResolveExeChange(const fs::path& exe, bool moveMarks) {
+    ExeHash& h = settings_.exeHashes[GameKey(exe)];
+    size_t moved = 0;
+    if (moveMarks && !h.previous.empty()) {
+        std::string label;
+        for (const GameState& g : games_)
+            if (GameKey(g.exe) == GameKey(exe)) label = GameLabel(g);
+        // Every modded folder: the Default one and every game's own.
+        std::vector<fs::path> roots{settings_.moddedFolder};
+        for (const fs::path& g : settings_.games) roots.push_back(settings_.FoldersFor(g).first);
+        std::set<std::wstring> done;
+        for (const fs::path& root : roots)
+            if (done.insert(GameKey(root)).second) moved += RemarkMods(root, h.previous, h.sha256, label);
+    }
+    h.previous.clear();
+    settings_.Save();
+    RefreshGames();
+    library_.Refresh();
+    Status("", moveMarks ? "Moved " + std::to_string(moved) + " mod(s) to the new exe" : "Marks left as they are");
+}
+
+void App::StartHashing() {
+    if (hashJob_.valid()) return;  // picked up again when it finishes
+    std::vector<fs::path> todo;
+    for (const fs::path& exe : settings_.games)
+        if (settings_.NeedsHash(exe)) todo.push_back(exe);
+    if (todo.empty()) return;
+    hashJob_ = std::async(std::launch::async, [todo] {
+        std::vector<std::pair<fs::path, ExeHash>> done;
+        for (const fs::path& exe : todo) done.emplace_back(exe, HashExe(exe));
+        return done;
+    });
 }
 
 void App::QueueAnalysis() {
@@ -252,7 +364,8 @@ void App::Status(const std::string& error, const std::string& success) {
 
 void App::RefreshGames() {
     games_.clear();
-    for (const auto& exe : settings_.games) games_.push_back(InspectGame(exe));
+    for (const auto& exe : settings_.games) games_.push_back(InspectGame(exe, settings_));
+    StartHashing();
 }
 
 void App::ApplySettings() {
@@ -260,8 +373,7 @@ void App::ApplySettings() {
         Status("Could not save reresorep.ini", "");
         return;
     }
-    if (settings_.moddedFolder != library_.moddedFolder() || settings_.originalFolder != library_.originalFolder())
-        library_.SetFolders(settings_.moddedFolder, settings_.originalFolder);
+    ApplyProfile();  // the Default folders may have changed
     // Installed proxies watch their dllsettings.ini, so this reaches a running game.
     std::string error;
     for (const GameState& g : games_) {
@@ -368,8 +480,12 @@ void App::DrawPackagePopups() {
             ImGui::CloseCurrentPopup();
             importModDialog_.reset();
             Defer([this, copy] {
-                const PackageResult r =
-                    ImportModPackage(copy.zip, library_.moddedFolder(), copy.name, copy.merge, labels_);
+                // Into a game's own folders: that game's. Into Default: whatever game the package was made
+                // for, unless it is merged into a mod that is already marked.
+                const GameState* g = ProfileGame();
+                const bool marked = !ReadModGame(library_.moddedFolder() / SafeFolderName(copy.name)).empty();
+                const PackageResult r = ImportModPackage(copy.zip, library_.moddedFolder(), copy.name, copy.merge,
+                                                         labels_, g ? g->sha256 : marked ? "" : copy.info.game);
                 if (r.labels) labels_.Save(LabelsFile());
                 library_.Refresh();
                 QueueAnalysis();
@@ -526,6 +642,28 @@ void App::Frame() {
     ImGui::End();
     DrawSimilarWindow();
 
+    if (hashJob_.valid() && hashJob_.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+        for (auto& [exe, hash] : hashJob_.get()) {
+            ExeHash& stored = settings_.exeHashes[GameKey(exe)];
+            // A patched or replaced exe: mods marked for the old hash no longer load until the user
+            // moves the marks (Games tab). The oldest unresolved hash is the one mods carry.
+            hash.previous = stored.previous;
+            if (hash.previous.empty() && !stored.sha256.empty() && !hash.sha256.empty() && stored.sha256 != hash.sha256)
+                hash.previous = stored.sha256;
+            if (hash.previous == hash.sha256) hash.previous.clear();  // changed back
+            if (!hash.previous.empty() && hash.previous != stored.previous)
+                Status(ToUtf8(exe.parent_path().filename()) + ": the game's exe changed. Mods marked for the old one "
+                                                              "no longer load - see the Games tab.",
+                       "");
+            stored = std::move(hash);
+        }
+        settings_.Save();
+        // Installed proxies learn their game's hash (and own folders) from dllsettings.ini.
+        for (const GameState& g : games_)
+            if (g.status == ProxyStatus::Installed || g.status == ProxyStatus::Outdated) WriteGameSettings(g.exe, settings_);
+        RefreshGames();  // hashes anything added meanwhile
+        ApplyProfile();
+    }
     if (closeJob_.valid() && closeJob_.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
         const CloseResult r = closeJob_.get();
         const std::string name = ToUtf8(closingExe_.filename());
@@ -557,6 +695,7 @@ void App::Frame() {
 }
 
 void App::DrawToolbarMods() {
+    DrawProfilePicker();
     if (ImGui::Button("Import .dds...")) {
         ImportFiles(PickFiles(hwnd_, L"Import modded textures", {{L"DirectDraw Surface", L"*.dds"}}, true),
                     ImportDir());
@@ -632,6 +771,7 @@ void App::DrawFolderNode(size_t& index) {
         viewFolder_ = f.rel;
     }
     if (!f.enabled && !f.selfDisabled) ImGui::SetItemTooltip("Off because a folder above it is turned off.");
+    else if (!f.game.empty()) ImGui::SetItemTooltip("Only for %s", ModGameName(f.game).c_str());
 
     if (ImGui::BeginPopupContextItem("ctx")) {
         const std::wstring rel = f.rel;
@@ -652,6 +792,24 @@ void App::DrawFolderNode(size_t& index) {
                 ImportFiles(PickFiles(hwnd_, L"Import modded textures", {{L"DirectDraw Surface", L"*.dds"}}, true), rel);
             });
         if (ImGui::MenuItem("Open folder")) OpenWithShell(library_.moddedFolder() / rel);
+        if (f.depth == 1 && ImGui::BeginMenu("Made for")) {
+            if (ImGui::MenuItem("Any game", nullptr, f.game.empty())) Defer([this, rel] { SetModGame(rel, nullptr); });
+            if (!f.game.empty() && std::none_of(games_.begin(), games_.end(), [&](const GameState& g) { return g.sha256 == f.game; }))
+                ImGui::MenuItem(ModGameName(f.game).c_str(), nullptr, true, false);
+            for (const GameState& g : games_) {
+                if (g.sha256.empty()) continue;
+                ImGui::PushID(g.exe.c_str());
+                if (ImGui::MenuItem(GameLabel(g).c_str(), nullptr, g.sha256 == f.game))
+                    Defer([this, rel, exe = g.exe] {
+                        for (const GameState& game : games_)
+                            if (game.exe == exe) SetModGame(rel, &game);
+                    });
+                ImGui::PopID();
+            }
+            ImGui::Separator();
+            ImGui::TextColored(kDimColor, "A game skips mods made for another build.");
+            ImGui::EndMenu();
+        }
         if (ImGui::MenuItem(f.depth == 1 ? "Export mod..." : "Export category as mod...")) {
             exportDialog_ = ExportDialog{rel, f.name, f.total};
             openExportPopup_ = true;
@@ -778,6 +936,11 @@ void App::DrawFolderPopups() {
                 const std::wstring rel = parent.empty() ? folder : parent + L"/" + folder;
                 Status(e, "Created " + name);
                 if (!e.empty()) return;
+                // A new mod in a game's own folders is marked as that game's.
+                if (const GameState* g = parent.empty() ? ProfileGame() : nullptr) {
+                    WriteModGame(library_.moddedFolder() / rel, g->sha256, GameLabel(*g));
+                    library_.Refresh();
+                }
                 modView_ = ModView::Folder;
                 viewFolder_ = rel;
                 if (add) AddDumpToMod(*add, rel);
@@ -856,6 +1019,7 @@ void App::DrawFolderPopups() {
 }
 
 void App::DrawToolbarDumps() {
+    DrawProfilePicker();
     if (ImGui::Button("Open folder")) OpenWithShell(library_.originalFolder());
     ImGui::SameLine();
     ImGui::Checkbox("Hide already modded", &hideModdedDumps_);
@@ -889,7 +1053,8 @@ void App::Redump() {
     std::string sent, error;
     bool outdated = false;
     for (const GameState& g : games_) {
-        if (FindProcesses(g.exe).empty()) continue;
+        // Only games that dump into the folder these tabs show.
+        if (settings_.FoldersFor(g.exe).second != library_.originalFolder() || FindProcesses(g.exe).empty()) continue;
         if (g.status == ProxyStatus::Outdated) outdated = true;  // an older proxy ignores the request
         if (g.status != ProxyStatus::Installed) continue;
         const std::string e = RequestRedump(g.exe);
@@ -898,7 +1063,7 @@ void App::Redump() {
     }
     if (error.empty() && sent.empty())
         error = outdated ? "The running game has an older proxy - update it on the Games tab, then restart the game."
-                         : "Start the game first (with the proxy installed).";
+                         : "Start the game first (with the proxy installed, using the folders shown here).";
     Status(error, "Redump requested for " + sent + ": textures are dumped again as the game loads them");
 }
 
@@ -1155,11 +1320,12 @@ void App::DrawCard(const TextureFile& file, bool isMod, float size) {
     }
 
     // Badges
-    const fs::path* active = isMod ? library_.ActiveMod(file.hash) : nullptr;
     if (isMod && !file.enabled)
         dl->AddText(ImVec2(pos.x + 6, pos.y + 4), IM_COL32(255, 180, 80, 255),
                     file.selfDisabled ? "off" : "category off");
-    else if (active && *active != file.path)
+    else if (isMod && file.otherBuild)
+        dl->AddText(ImVec2(pos.x + 6, pos.y + 4), IM_COL32(160, 160, 160, 255), "other build");
+    else if (isMod && file.unused)
         dl->AddText(ImVec2(pos.x + 6, pos.y + 4), IM_COL32(255, 120, 110, 255), "unused (duplicate)");
     if (!isMod && library_.IsModded(file.hash))
         dl->AddText(ImVec2(pos.x + 6, pos.y + 4), IM_COL32(110, 200, 255, 255), "modded");
@@ -1388,12 +1554,28 @@ void App::DrawDetails() {
         if (ImGui::Button("Show in Explorer", ImVec2(-1, 0))) ShowInExplorer(file->path);
         if (!file->selfDisabled && !file->enabled)
             ImGui::TextColored(kErrorColor, "Off because its mod or category is turned off.");
-        int sameHash = 0;
-        for (const auto& m : library_.mods()) sameHash += (m.enabled && m.hash == file->hash);
-        const fs::path* active = library_.ActiveMod(file->hash);
-        if (sameHash > 1 && active) {
-            ImGui::TextColored(kErrorColor, "%d active textures share this hash. The game uses:", sameHash);
-            ImGui::TextWrapped("%s", ToUtf8(active->lexically_relative(library_.moddedFolder())).c_str());
+        ImGui::PushStyleColor(ImGuiCol_Text, kErrorColor);  // wrapped: the details panel is narrow
+        if (file->otherBuild)
+            ImGui::TextWrapped("Its mod is only for %s, so this game skips it.", ModGameName(file->game).c_str());
+        // Where another texture with the same hash wins, per build that loads this one.
+        std::vector<std::pair<std::string, const fs::path*>> lost;
+        for (const auto& [build, winners] : library_.winners()) {
+            auto it = winners.find(file->hash);
+            if (file->enabled && Library::LoadsIn(*file, build) && it != winners.end() && it->second != file->path)
+                lost.emplace_back(build, &it->second);
+        }
+        if (!lost.empty())
+            ImGui::TextWrapped("%s", file->unused ? "Another active texture has this hash, so this one is unused:"
+                                                  : "Another active texture with this hash wins in:");
+        ImGui::PopStyleColor();
+        if (!lost.empty()) {
+            for (const auto& [build, winner] : lost) {
+                const std::string where = ProfileGame()  ? "This game"
+                                          : build.empty() ? "Builds with no mods marked for them"
+                                                          : ModGameName(build);
+                ImGui::TextWrapped("%s: %s", where.c_str(),
+                                   ToUtf8(winner->lexically_relative(library_.moddedFolder())).c_str());
+            }
             ImGui::TextColored(kDimColor, "Turn the others off to choose which one wins.");
         }
     } else {
@@ -1581,7 +1763,7 @@ void App::DrawGames() {
     // they wrap on narrow windows); the folder path is what gets cut short.
     const ImGuiStyle& style = ImGui::GetStyle();
     float buttonsWidth = 0;
-    for (const char* label : {"Start", "Closing...", "Reinstall", "Uninstall", "Open folder", "Remove"})
+    for (const char* label : {"Start", "Closing...", "Reinstall", "Uninstall", "Open folder", "[x] Own folders", "Remove"})
         buttonsWidth += ImGui::CalcTextSize(label).x + style.FramePadding.x * 2 + style.ItemSpacing.x;
     buttonsWidth = std::min(buttonsWidth - style.ItemSpacing.x, ImGui::GetContentRegionAvail().x * 0.5f);
     ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(style.CellPadding.x * 2, 6.0f));
@@ -1615,11 +1797,20 @@ void App::DrawGames() {
         ImGui::TableNextRow();
         ImGui::TableNextColumn();
         ImGui::AlignTextToFramePadding();
-        ImGui::TextUnformatted(ToUtf8(g.exe.filename()).c_str());
+        // The game's folder name first: every Siege build is a RainbowSix.exe.
+        const std::string name = ToUtf8(g.exe.parent_path().filename());
+        ImGui::TextUnformatted(name.empty() ? ToUtf8(g.exe.filename()).c_str() : name.c_str());
+        ImGui::SameLine(0, 8);
+        if (!g.sha256.empty()) {
+            ImGui::TextColored(kDimColor, "%s", g.sha256.substr(0, 8).c_str());
+            ImGui::SetItemTooltip("SHA-256 of the exe, which tells Siege builds apart:\n%s", g.sha256.c_str());
+        } else if (g.status != ProxyStatus::Missing) {
+            ImGui::TextColored(kDimColor, "hashing...");
+        }
         ImGui::SameLine(0, 12);
-        const std::string folder = ToUtf8(g.exe.parent_path());
-        ImGui::TextColored(kDimColor, "%s", folder.c_str());
-        ImGui::SetItemTooltip("%s", folder.c_str());
+        const std::string path = ToUtf8(g.exe);
+        ImGui::TextColored(kDimColor, "%s", path.c_str());
+        ImGui::SetItemTooltip("%s", path.c_str());
 
         ImGui::TableNextColumn();
         const ImVec4 color = g.status == ProxyStatus::Installed ? kOkColor
@@ -1636,6 +1827,21 @@ void App::DrawGames() {
         if (g.chainsOtherD3D11) {
             part(kDimColor, "+ ori_d3d11.dll");
             ImGui::SetItemTooltip("Another d3d11.dll (for example ReShade) was kept as ori_d3d11.dll and still loads.");
+        }
+        if (!g.previousSha256.empty()) {
+            part(kErrorColor, "exe changed");
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Fix...")) ImGui::OpenPopup("exechanged");
+            if (ImGui::BeginPopup("exechanged")) {
+                ImGui::Text("%s's exe changed since mods were marked for it (%s -> %s).", ToUtf8(g.exe.filename()).c_str(),
+                            g.previousSha256.substr(0, 8).c_str(), g.sha256.substr(0, 8).c_str());
+                ImGui::TextColored(kDimColor, "Mods marked for the old exe no longer load in this game.");
+                if (ImGui::Button("Same build (patched): move the marks to the new exe"))
+                    Defer([this, exe = g.exe] { ResolveExeChange(exe, true); });
+                if (ImGui::Button("Different build: leave the marks as they are"))
+                    Defer([this, exe = g.exe] { ResolveExeChange(exe, false); });
+                ImGui::EndPopup();
+            }
         }
 
         ImGui::TableNextColumn();
@@ -1697,6 +1903,20 @@ void App::DrawGames() {
             ImGui::EndDisabled();
             flow("Open folder");
             if (ImGui::Button("Open folder")) OpenWithShell(g.exe.parent_path());
+            flow("[x] Own folders");
+            bool own = g.ownFolders;
+            ImGui::BeginDisabled(g.sha256.empty());
+            if (ImGui::Checkbox("Own folders", &own)) Defer([this, exe = g.exe, own] { SetOwnFolders(exe, own); });
+            ImGui::EndDisabled();
+            if (g.sha256.empty()) {
+                ImGui::SetItemTooltip("Working out the exe's hash first...");
+            } else {
+                ImGui::SetItemTooltip("On: this game uses its own mods and dumps in\n%s\n"
+                                      "Off: it uses the Default (shared) folders from the Settings tab, where it\n"
+                                      "skips mods marked for another game.",
+                                      ToUtf8(g.ownFolders ? settings_.FoldersFor(g.exe).first.parent_path()
+                                                          : GameFolder(g.sha256)).c_str());
+            }
             flow("Remove");
         }
         if (ImGui::Button("Remove")) remove = i;
@@ -1709,6 +1929,7 @@ void App::DrawGames() {
         settings_.games.erase(settings_.games.begin() + *remove);
         settings_.Save();
         RefreshGames();
+        ApplyProfile();  // back to Default if that game was picked
     }
 }
 
@@ -1736,7 +1957,8 @@ void App::DrawSettings() {
         ImGui::PopID();
     };
 
-    ImGui::SeparatorText("Folders");
+    ImGui::SeparatorText("Default folders");
+    ImGui::TextColored(kDimColor, "Shared by every game without its own folders (Games tab -> Own folders).");
     folderRow("Load modded textures from", settings_.moddedFolder, L"Modded textures folder");
     folderRow("Save original (dumped) textures to", settings_.originalFolder, L"Original textures folder");
 

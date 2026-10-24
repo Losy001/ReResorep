@@ -16,7 +16,8 @@ std::optional<uint32_t> ParseModFileName(const std::wstring& fileName);
 // instead of the original's directory listing per texture creation.
 class TextureIndex {
 public:
-    void Scan(const std::filesystem::path& folder);
+    // With `gameSha256`, mods whose !reresorep_game.ini names another game are skipped.
+    void Scan(const std::filesystem::path& folder, const std::string& gameSha256 = {});
 
     // Exact match first, then the original's +-1/+-2 tolerance.
     const std::filesystem::path* Find(uint32_t hash) const;

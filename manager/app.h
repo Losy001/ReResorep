@@ -132,6 +132,16 @@ private:
     void Defer(std::function<void()> action) { deferred_.push_back(std::move(action)); }
     void ApplySettings();
     void RefreshGames();
+    // Profiles: the Mods/Dumps tabs show the Default folders or one game's own folders.
+    void ApplyProfile();                   // points the library at the picked profile's folders
+    const GameState* ProfileGame() const;  // the picked game, nullptr for Default
+    void DrawProfilePicker();
+    void SetOwnFolders(const std::filesystem::path& exe, bool own);
+    void SetModGame(const std::wstring& rel, const GameState* game);  // nullptr = any game
+    std::string ModGameName(const std::string& sha) const;            // for tooltips and menus
+    void StartHashing();                   // works out missing exe hashes in the background
+    // After a game's exe changed: move mods marked for its old hash to the new one, or not.
+    void ResolveExeChange(const std::filesystem::path& exe, bool moveMarks);
     void Status(const std::string& error, const std::string& success);
     const TextureFile* FindSelected() const;
 
@@ -168,6 +178,7 @@ private:
     std::future<CloseResult> closeJob_;
     std::filesystem::path closingExe_;
     size_t deleteTotal_ = 0;
+    std::future<std::vector<std::pair<std::filesystem::path, ExeHash>>> hashJob_;
 
     Tab tab_ = Tab::Mods;
     std::optional<Selection> selection_;

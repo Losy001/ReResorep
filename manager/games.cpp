@@ -1,10 +1,15 @@
 #include "games.h"
 
+#include <windows.h>
+#include <bcrypt.h>
+
 #include <algorithm>
 #include <cstdlib>
+#include <cwctype>
 #include <fstream>
 #include <system_error>
 
+#include "mod_state.h"
 #include "theme.h"
 #include "win_util.h"
 
@@ -64,6 +69,23 @@ void ManagerSettings::Load() {
     onlyBlackIce = ini.GetBool("ui_only_black_ice", false);
     games.clear();
     for (const std::string& g : ini.GetAll("game")) games.emplace_back(Utf8ToWide(g));
+    // "<sha256>|<size>|<modified>|<previous sha256>|<exe path>"
+    exeHashes.clear();
+    for (const std::string& line : ini.GetAll("game_sha256")) {
+        size_t a = line.find('|'), b = line.find('|', a + 1), c = line.find('|', b + 1), d = line.find('|', c + 1);
+        if (a == std::string::npos || b == std::string::npos || c == std::string::npos || d == std::string::npos)
+            continue;
+        ExeHash h{std::strtoull(line.c_str() + a + 1, nullptr, 10), std::strtoll(line.c_str() + b + 1, nullptr, 10),
+                  line.substr(0, a), line.substr(c + 1, d - c - 1)};
+        exeHashes[GameKey(Utf8ToWide(line.substr(d + 1)))] = std::move(h);
+    }
+    // "<its folder in games>|<exe path>"
+    ownFolders.clear();
+    for (const std::string& line : ini.GetAll("game_own_folders")) {
+        const size_t bar = line.find('|');
+        if (bar != std::string::npos && bar > 0) ownFolders[GameKey(Utf8ToWide(line.substr(bar + 1)))] = line.substr(0, bar);
+    }
+    profile = Utf8ToWide(ini.GetOr("ui_profile", ""));
 }
 
 bool ManagerSettings::Save() const {
@@ -85,10 +107,98 @@ bool ManagerSettings::Save() const {
     ini.SetBool("ui_hide_grayscale", hideGrayscale);
     ini.SetBool("ui_hide_packed", hidePacked);
     ini.SetBool("ui_only_black_ice", onlyBlackIce);
-    std::vector<std::string> list;
-    for (const auto& g : games) list.push_back(WideToUtf8(g.wstring()));
+    std::vector<std::string> list, hashes, own;
+    for (const auto& g : games) {
+        list.push_back(WideToUtf8(g.wstring()));
+        if (auto it = exeHashes.find(GameKey(g)); it != exeHashes.end())
+            hashes.push_back(it->second.sha256 + "|" + std::to_string(it->second.size) + "|" +
+                             std::to_string(it->second.modified) + "|" + it->second.previous + "|" + list.back());
+        if (auto it = ownFolders.find(GameKey(g)); it != ownFolders.end()) own.push_back(it->second + "|" + list.back());
+    }
     ini.SetAll("game", list);
+    ini.SetAll("game_sha256", hashes);
+    ini.SetAll("game_own_folders", own);
+    ini.Set("ui_profile", WideToUtf8(profile.wstring()));
     return ini.Save(File());
+}
+
+std::wstring GameKey(const fs::path& exe) {
+    std::wstring k = exe.lexically_normal().wstring();
+    for (wchar_t& c : k) c = wchar_t(std::towlower(c));
+    return k;
+}
+
+fs::path GameFolder(const std::string& exeSha256) {
+    return ExeDirectory() / L"games" / Utf8ToWide(exeSha256.substr(0, 16));
+}
+
+std::string ManagerSettings::ExeSha(const fs::path& exe) const {
+    auto it = exeHashes.find(GameKey(exe));
+    return it == exeHashes.end() ? std::string() : it->second.sha256;
+}
+
+bool ManagerSettings::NeedsHash(const fs::path& exe) const {
+    std::error_code ec;
+    const uint64_t size = fs::file_size(exe, ec);
+    if (ec) return false;  // missing: nothing to hash
+    const int64_t modified = fs::last_write_time(exe, ec).time_since_epoch().count();
+    auto it = exeHashes.find(GameKey(exe));
+    return it == exeHashes.end() || it->second.size != size || it->second.modified != modified;
+}
+
+bool ManagerSettings::UsesOwnFolders(const fs::path& exe) const { return ownFolders.count(GameKey(exe)) != 0; }
+
+std::pair<fs::path, fs::path> ManagerSettings::FoldersFor(const fs::path& exe) const {
+    auto it = ownFolders.find(GameKey(exe));
+    if (it == ownFolders.end()) return {moddedFolder, originalFolder};
+    const fs::path root = GameFolder(it->second);
+    return {root / L"modded", root / L"original"};
+}
+
+size_t RemarkMods(const fs::path& moddedRoot, const std::string& from, const std::string& to,
+                  const std::string& gameName) {
+    size_t count = 0;
+    std::error_code ec;
+    for (fs::directory_iterator it(moddedRoot, ec), end; !ec && it != end; it.increment(ec))
+        if (it->is_directory(ec) && ReadModGame(it->path()) == from && WriteModGame(it->path(), to, gameName)) ++count;
+    return count;
+}
+
+std::string GameLabel(const GameState& g) {
+    std::string name = ToUtf8(g.exe.parent_path().filename());
+    if (name.empty()) name = ToUtf8(g.exe.filename());
+    return g.sha256.empty() ? name : name + " (" + g.sha256.substr(0, 8) + ")";
+}
+
+ExeHash HashExe(const fs::path& exe) {
+    ExeHash h;
+    std::error_code ec;
+    h.size = fs::file_size(exe, ec);
+    if (ec) return {};
+    h.modified = fs::last_write_time(exe, ec).time_since_epoch().count();
+
+    BCRYPT_ALG_HANDLE alg = nullptr;
+    BCRYPT_HASH_HANDLE hash = nullptr;
+    if (!BCRYPT_SUCCESS(BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA256_ALGORITHM, nullptr, 0))) return h;
+    std::ifstream in(exe, std::ios::binary);
+    bool ok = in && BCRYPT_SUCCESS(BCryptCreateHash(alg, &hash, nullptr, 0, nullptr, 0, 0));
+    std::vector<char> buf(4 << 20);
+    while (ok && in) {
+        in.read(buf.data(), std::streamsize(buf.size()));
+        if (in.gcount() > 0)
+            ok = BCRYPT_SUCCESS(BCryptHashData(hash, reinterpret_cast<PUCHAR>(buf.data()), ULONG(in.gcount()), 0));
+    }
+    uint8_t digest[32];
+    ok = ok && in.eof() && BCRYPT_SUCCESS(BCryptFinishHash(hash, digest, sizeof(digest), 0));
+    if (hash) BCryptDestroyHash(hash);
+    BCryptCloseAlgorithmProvider(alg, 0);
+    if (!ok) return h;  // no hash, but not tried again until the exe changes
+    static constexpr char kHex[] = "0123456789abcdef";
+    for (uint8_t b : digest) {
+        h.sha256 += kHex[b >> 4];
+        h.sha256 += kHex[b & 15];
+    }
+    return h;
 }
 
 const char* StatusText(ProxyStatus s) {
@@ -104,9 +214,13 @@ const char* StatusText(ProxyStatus s) {
 
 fs::path BundledProxy() { return ExeDirectory() / L"proxy" / L"d3d11.dll"; }
 
-GameState InspectGame(const fs::path& exe) {
+GameState InspectGame(const fs::path& exe, const ManagerSettings& settings) {
     GameState st;
     st.exe = exe;
+    st.sha256 = settings.ExeSha(exe);
+    if (auto it = settings.exeHashes.find(GameKey(exe)); it != settings.exeHashes.end())
+        st.previousSha256 = it->second.previous;
+    st.ownFolders = settings.UsesOwnFolders(exe);
     if (!fs::exists(exe)) {
         st.status = ProxyStatus::Missing;
         return st;
@@ -129,9 +243,14 @@ GameState InspectGame(const fs::path& exe) {
 }
 
 std::string WriteGameSettings(const fs::path& exe, const ManagerSettings& s) {
+    const auto [modded, original] = s.FoldersFor(exe);
+    std::error_code ec;
+    fs::create_directories(modded, ec);
+    fs::create_directories(original, ec);
     IniFile ini;
-    ini.Set(keys::kOriginalFolder, WideToUtf8(s.originalFolder.wstring()));
-    ini.Set(keys::kModdedFolder, WideToUtf8(s.moddedFolder.wstring()));
+    ini.Set(keys::kOriginalFolder, WideToUtf8(original.wstring()));
+    ini.Set(keys::kModdedFolder, WideToUtf8(modded.wstring()));
+    if (const std::string sha = s.ExeSha(exe); !sha.empty()) ini.Set(keys::kGameSha256, sha);
     ini.SetBool(keys::kModCreatorMode, s.modCreatorMode);
     ini.SetBool(keys::kSaveTextures, s.saveTextures);
     ini.SetBool(keys::kLogEnabled, s.logEnabled);

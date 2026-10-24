@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "dds.h"
+#include "mod_state.h"
 #include "resorep_crypto.h"
 #include "resorep_hash.h"
 
@@ -76,7 +77,8 @@ int main(int argc, char** argv) {
     {
         std::ofstream ini(dir / L"dllsettings.ini");
         ini << "modded_textures_folder=modded\noriginal_textures_folder=original\n"
-               "mod_creator_mode_enabled=true\nsave_textures=true\ndll_log_enabled=true\ndll_log_level=debug\n";
+               "mod_creator_mode_enabled=true\nsave_textures=true\ndll_log_enabled=true\ndll_log_level=debug\n"
+               "game_exe_sha256=" << std::string(64, 'c') << "\n";
     }
 
     const GameTexture plain = MakeGameTexture(0x112233);
@@ -94,6 +96,16 @@ int main(int argc, char** argv) {
     fs::create_directories(dir / L"modded" / L"Pack" / L"Weapons");
     WriteFile(dir / L"modded" / L"Pack" / L"Weapons" / (std::to_wstring(categorized.hash) + L".dds"),
               SolidDds(8, 8, 0xFF00FFFF));
+
+    // Mods marked for a Siege build: this game's applies, another build's is skipped.
+    const GameTexture forThisBuild = MakeGameTexture(0x246802);
+    const GameTexture forOtherBuild = MakeGameTexture(0x369258);
+    fs::create_directories(dir / L"modded" / L"This build");
+    fs::create_directories(dir / L"modded" / L"Other build");
+    resorep::WriteModGame(dir / L"modded" / L"This build", std::string(64, 'c'), "");
+    resorep::WriteModGame(dir / L"modded" / L"Other build", std::string(64, 'd'), "");
+    WriteFile(dir / L"modded" / L"This build" / (std::to_wstring(forThisBuild.hash) + L".dds"), SolidDds(8, 8, 0xFF0000FF));
+    WriteFile(dir / L"modded" / L"Other build" / (std::to_wstring(forOtherBuild.hash) + L".dds"), SolidDds(8, 8, 0xFF0000FF));
 
     HMODULE proxy = LoadLibraryW((dir / L"d3d11.dll").c_str());
     CHECK(proxy != nullptr);
@@ -124,6 +136,8 @@ int main(int argc, char** argv) {
     CHECK(CreateAndGetWidth(dev.Get(), offByOne) == 8);    // hash tolerance
     CHECK(CreateAndGetWidth(dev.Get(), untouched) == 64);  // no mod: game's own texture
     CHECK(CreateAndGetWidth(dev.Get(), later) == 64);
+    CHECK(CreateAndGetWidth(dev.Get(), forThisBuild) == 8);
+    CHECK(CreateAndGetWidth(dev.Get(), forOtherBuild) == 64);
 
     // Through ID3D11Device1 too (same vtable slot).
     ComPtr<ID3D11Device1> dev1;

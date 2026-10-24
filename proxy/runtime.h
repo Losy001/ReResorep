@@ -19,6 +19,7 @@ struct Config {
     bool logEnabled = false;
     bool logDebug = false;
     std::filesystem::path logFile;
+    std::string gameSha256;  // this game's exe, written by the manager; mods for other games are skipped
 };
 
 // Process-wide state of the proxy. Created on the first D3D11 device, not in DllMain.

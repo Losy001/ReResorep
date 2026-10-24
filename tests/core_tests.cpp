@@ -366,6 +366,51 @@ static void TestModPackageRoundTrip() {
     fs::remove_all(base);
 }
 
+static void TestModGame() {
+    namespace fs = std::filesystem;
+    wchar_t tmp[MAX_PATH];
+    GetTempPathW(MAX_PATH, tmp);
+    const fs::path root = fs::path(tmp) / L"reresorep_game_test";
+    fs::remove_all(root);
+    const std::string buildA(64, 'a'), buildB(64, 'b');
+    for (const wchar_t* dir : {L"ForA/Cat", L"ForB", L"AnyGame"}) fs::create_directories(root / dir);
+    for (const wchar_t* file : {L"ForA/Cat/100.dds", L"ForB/200.dds", L"AnyGame/300.dds", L"400.dds"})
+        std::ofstream(root / file) << "x";
+
+    CHECK(ReadModGame(root / L"ForA").empty());
+    CHECK(WriteModGame(root / L"ForA", std::string(64, 'A'), "Build A"));  // stored and compared in lower case
+    CHECK(WriteModGame(root / L"ForB", buildB, ""));
+    CHECK(fs::exists(root / L"ForA" / L"!reresorep_game.ini"));
+    CHECK(ReadModGame(root / L"ForA") == buildA && ReadModGame(root / L"ForB") == buildB);
+
+    TextureIndex index;
+    index.Scan(root);  // no game given: every mod applies
+    CHECK(index.size() == 4);
+    index.Scan(root, buildA);
+    CHECK(index.FindExact(100) && !index.FindExact(200) && index.FindExact(300) && index.FindExact(400));
+    index.Scan(root, buildB);
+    CHECK(!index.FindExact(100) && index.FindExact(200) && index.FindExact(300) && index.FindExact(400));
+
+    // The game travels with an exported mod (and a category of it), and comes back on import.
+    LabelStore labels;
+    const fs::path zip = root.parent_path() / L"reresorep_game_test.zip";
+    CHECK(ExportModPackage(root, L"ForA", zip, {true, false}, labels).error.empty());
+    CHECK(InspectModPackage(zip).game == buildA);
+    CHECK(ExportModPackage(root, L"ForA/Cat", zip, {true, false}, labels).error.empty());
+    CHECK(InspectModPackage(zip).game == buildA);
+    const fs::path other = root / L"other";
+    fs::create_directories(other);
+    CHECK(ImportModPackage(zip, other, "Copy", false, labels, buildB).error.empty());
+    CHECK(ReadModGame(other / L"Copy") == buildB);
+    CHECK(ImportModPackage(zip, other, "Untagged", false, labels).error.empty());
+    CHECK(ReadModGame(other / L"Untagged").empty());
+
+    CHECK(WriteModGame(root / L"ForA", "", ""));  // back to any game
+    CHECK(!fs::exists(root / L"ForA" / L"!reresorep_game.ini"));
+    fs::remove(zip);
+    fs::remove_all(root);
+}
+
 int main() {
     setvbuf(stdout, nullptr, _IONBF, 0);  // keep output if a test crashes
     // Debug-CRT assertions go to stderr instead of a dialog nobody sees in CI.
@@ -385,6 +430,7 @@ int main() {
         {"TestLabels", TestLabels},
         {"TestZipFromOtherTool", TestZipFromOtherTool},
         {"TestModPackageRoundTrip", TestModPackageRoundTrip},
+        {"TestModGame", TestModGame},
     };
     for (const auto& t : tests) {
         std::printf("%s\n", t.name);

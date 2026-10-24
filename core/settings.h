@@ -37,6 +37,9 @@ inline constexpr char kModCreatorMode[] = "mod_creator_mode_enabled";
 inline constexpr char kLogEnabled[] = "dll_log_enabled";
 inline constexpr char kLogFile[] = "dll_log_file";
 inline constexpr char kLogLevel[] = "dll_log_level";
+// SHA-256 of the game's exe (lower-case hex): the proxy skips mods made for another build.
+// Also the key in a mod's !reresorep_game.ini.
+inline constexpr char kGameSha256[] = "game_exe_sha256";
 }  // namespace keys
 
 inline constexpr wchar_t kDllSettingsFile[] = L"dllsettings.ini";

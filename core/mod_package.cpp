@@ -84,6 +84,7 @@ std::string PackageRoot(const std::vector<ZipReader::Entry>& entries, const std:
 
 struct Manifest {
     std::string name;
+    std::string game;  // exe SHA-256 of the game the mod is for, "" = any
     std::vector<std::string> disabled;
 };
 
@@ -101,6 +102,7 @@ std::optional<Manifest> ReadManifest(ZipReader& zip) {
             if (eq == std::string::npos) continue;
             const std::string key = line.substr(0, eq), value = line.substr(eq + 1);
             if (key == "name") m.name = value;
+            else if (key == keys::kGameSha256) m.game = value;
             else if (key == "disabled" && !value.empty()) m.disabled.push_back(value);
         }
         return m;
@@ -136,6 +138,10 @@ PackageResult ExportModPackage(const fs::path& moddedRoot, const std::wstring& r
         return r;
     }
     std::string manifest = "format=1\r\nname=" + name + "\r\n";
+    // A category exported as a mod is for the same game as the mod it is in.
+    const fs::path mod = fs::path(rel).lexically_normal().begin()->wstring();
+    if (const std::string game = ReadModGame(moddedRoot / mod); !game.empty())
+        manifest += std::string(keys::kGameSha256) + "=" + game + "\r\n";
     LabelStore packed;
     zip.AddDirectory(name);
 
@@ -199,6 +205,7 @@ PackageInfo InspectModPackage(const fs::path& zipPath) {
             if (zip.Extract(e, data, 16 << 20)) info.labels = LabelStore::Parse(std::string(data.begin(), data.end())).size();
         }
     }
+    if (manifest) info.game = manifest->game;
     if (manifest && !manifest->name.empty()) info.name = manifest->name;
     else if (!root.empty()) info.name = root.substr(0, root.size() - 1);
     else info.name = WideToUtf8(zipPath.stem().wstring());
@@ -207,7 +214,7 @@ PackageInfo InspectModPackage(const fs::path& zipPath) {
 }
 
 PackageResult ImportModPackage(const fs::path& zipPath, const fs::path& moddedRoot, const std::string& modName,
-                               bool overwrite, LabelStore& labels) {
+                               bool overwrite, LabelStore& labels, const std::string& gameSha256) {
     PackageResult r;
     const std::wstring folderName = SafeFolderName(modName);
     if (folderName.empty()) {
@@ -278,6 +285,8 @@ PackageResult ImportModPackage(const fs::path& zipPath, const fs::path& moddedRo
         r.bytes += data.size();
     }
 
+    if (!gameSha256.empty() && !WriteModGame(target, gameSha256, ""))
+        r.error = "Imported, but could not save which game the mod is for.";
     if (manifest && !manifest->disabled.empty()) {
         DisabledSet state;
         state.Load(moddedRoot);

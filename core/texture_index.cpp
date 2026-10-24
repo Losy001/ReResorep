@@ -24,7 +24,7 @@ std::optional<uint32_t> ParseModFileName(const std::wstring& fileName) {
     return uint32_t(value);
 }
 
-void TextureIndex::Scan(const std::filesystem::path& folder) {
+void TextureIndex::Scan(const std::filesystem::path& folder, const std::string& gameSha256) {
     files_.clear();
     DisabledSet disabled;
     disabled.Load(folder);
@@ -35,7 +35,12 @@ void TextureIndex::Scan(const std::filesystem::path& folder) {
     for (std::filesystem::recursive_directory_iterator it(folder, ec), end; !ec && it != end; it.increment(ec)) {
         const std::filesystem::path rel = it->path().lexically_relative(folder);
         if (it->is_directory(ec)) {
-            if (disabled.IsEffectivelyDisabled(rel)) it.disable_recursion_pending();
+            if (disabled.IsEffectivelyDisabled(rel)) {
+                it.disable_recursion_pending();
+            } else if (it.depth() == 0 && !gameSha256.empty()) {
+                const std::string modGame = ReadModGame(it->path());
+                if (!modGame.empty() && _stricmp(modGame.c_str(), gameSha256.c_str()) != 0) it.disable_recursion_pending();
+            }
             continue;
         }
         if (!it->is_regular_file(ec)) continue;

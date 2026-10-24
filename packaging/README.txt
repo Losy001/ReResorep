@@ -39,6 +39,10 @@ Making your own mods
 - Label hashes in the details panel so you remember what they are.
 - Group textures into mods and categories in the sidebar, then right-click a
   mod -> "Export mod..." to share it as a .zip.
+- Several Siege builds: tick "Own folders" on the Games tab to give a build its
+  own mods and dumps, and pick it at the top of the Mods/Dumps tabs. In the
+  shared folders, right-click a mod -> "Made for" so other builds skip it
+  (saved as !reresorep_game.ini in the mod's folder).
 
 
 Removing ReResorep
@@ -51,6 +55,8 @@ Where things are kept (all inside this folder)
 ------------------------------------------------------------------------------
   modded\                  your mods (each folder is a mod, sub-folders are categories)
   original\                dumped game textures
+  games\<exe hash>\        mods and dumps of a game that has "Own folders" ticked
+                           (Games tab); the folders above are the shared Default ones
   reresorep.ini            settings and your game list
   labels.txt               your texture labels
   texture_analysis.cache   detected texture types (safe to delete)

@@ -35,4 +35,13 @@ private:
     std::map<std::wstring, std::wstring> entries_;  // Key -> Slashed
 };
 
+// Which game build a mod is for, kept in the mod's own folder ("!" keeps it at the top in
+// Explorer). Identified by the SHA-256 of the game's exe, since every Siege build is a
+// RainbowSix.exe. A mod without it is for any game.
+inline constexpr wchar_t kModGameFile[] = L"!reresorep_game.ini";
+// Lower-case hex SHA-256, or "" for any game.
+std::string ReadModGame(const std::filesystem::path& modFolder);
+// `gameName` is only for people reading the file. An empty hash removes the file.
+bool WriteModGame(const std::filesystem::path& modFolder, const std::string& exeSha256, const std::string& gameName);
+
 }  // namespace resorep

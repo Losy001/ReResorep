@@ -1,5 +1,6 @@
 #include "mod_state.h"
 
+#include <cctype>
 #include <cwctype>
 #include <vector>
 
@@ -78,6 +79,26 @@ void DisabledSet::Rename(const std::filesystem::path& from, const std::filesyste
 void DisabledSet::RemoveUnder(const std::filesystem::path& rel) {
     const std::wstring key = Key(rel);
     std::erase_if(entries_, [&](const auto& e) { return e.first == key || e.first.starts_with(key + L"/"); });
+}
+
+std::string ReadModGame(const std::filesystem::path& modFolder) {
+    IniFile ini;
+    if (!ini.Load(modFolder / kModGameFile)) return {};
+    std::string sha = ini.GetOr(keys::kGameSha256, "");
+    for (char& c : sha) c = char(std::tolower(static_cast<unsigned char>(c)));
+    return sha;
+}
+
+bool WriteModGame(const std::filesystem::path& modFolder, const std::string& exeSha256, const std::string& gameName) {
+    std::error_code ec;
+    if (exeSha256.empty()) {
+        std::filesystem::remove(modFolder / kModGameFile, ec);
+        return !ec;
+    }
+    IniFile ini;
+    ini.Set(keys::kGameSha256, exeSha256);
+    if (!gameName.empty()) ini.Set("game", gameName);
+    return ini.Save(modFolder / kModGameFile);
 }
 
 }  // namespace resorep
