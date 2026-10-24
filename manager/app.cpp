@@ -303,6 +303,7 @@ void App::ImportLabels() {
         return;
     }
     const size_t changed = labels_.Merge(entries, true);
+    labelEditHash_.reset();  // the label editor reloads, in case its hash got a new label
     const bool saved = labels_.Save(LabelsFile());
     Status(saved ? "" : "Could not write labels.txt next to ReResorep.exe",
            "Imported " + std::to_string(entries.size()) + " labels (" + std::to_string(changed) + " new or changed)");
@@ -546,7 +547,10 @@ void App::DrawPackagePopups() {
                 const bool marked = !ReadModGame(library_.moddedFolder() / SafeFolderName(copy.name)).empty();
                 const PackageResult r = ImportModPackage(copy.zip, library_.moddedFolder(), copy.name, copy.merge,
                                                          labels_, g ? g->sha256 : marked ? "" : copy.info.game);
-                if (r.labels) labels_.Save(LabelsFile());
+                if (r.labels) {
+                    labels_.Save(LabelsFile());
+                    labelEditHash_.reset();  // as for ImportLabels
+                }
                 library_.Refresh();
                 QueueAnalysis();
                 std::string msg = "Imported " + std::to_string(r.textures) + " textures into \"" + copy.name + "\"";
