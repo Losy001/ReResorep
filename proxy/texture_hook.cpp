@@ -119,6 +119,7 @@ HRESULT STDMETHODCALLTYPE HookedCreateTexture2D(ID3D11Device* self, const D3D11_
 void InstallTextureHook(ID3D11Device* device) {
     if (!device) return;
     Runtime::Get().EnsureStarted();
+    if (!Runtime::Get().intact()) return;  // a damaged or modified proxy only passes calls through
 
     std::lock_guard lock(g_patchMutex);
     void** vtable = *reinterpret_cast<void***>(device);

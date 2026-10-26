@@ -29,10 +29,13 @@ add_executable(ReResorep WIN32
 )
 target_link_libraries(ReResorep PRIVATE resorep_core imgui d3d11 dxgi d3dcompiler shell32 ole32 version dwmapi windowscodecs bcrypt)
 set_target_properties(ReResorep PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${RERESOREP_BIN}
-    RUNTIME_OUTPUT_DIRECTORY_RELEASE ${RERESOREP_BIN}
-    RUNTIME_OUTPUT_DIRECTORY_DEBUG ${RERESOREP_BIN}
-    RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO ${RERESOREP_BIN}
+    RUNTIME_OUTPUT_DIRECTORY ${RERESOREP_UNSEALED}
+    RUNTIME_OUTPUT_DIRECTORY_RELEASE ${RERESOREP_UNSEALED}
+    RUNTIME_OUTPUT_DIRECTORY_DEBUG ${RERESOREP_UNSEALED}
+    RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO ${RERESOREP_UNSEALED}
+    # Run and debug the sealed copy: the linked one refuses to start.
+    VS_DEBUGGER_COMMAND ${RERESOREP_BIN}/ReResorep.exe
 )
 # The manager ships the proxy next to itself (bin/proxy/d3d11.dll).
 add_dependencies(ReResorep proxy)
+reresorep_seal(ReResorep ${RERESOREP_BIN}/ReResorep.exe)

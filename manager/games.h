@@ -84,8 +84,13 @@ enum class ProxyStatus {
     Outdated,        // an older ReResorep build
     LegacyResorep,   // the original Java Resorep's dx11proxy
     Missing,         // the exe no longer exists
+    Modified,        // our proxy, but damaged or changed since it was built: it does nothing
 };
 const char* StatusText(ProxyStatus s);
+// One of our proxies is in the game folder (current, older or modified).
+inline bool HasOurProxy(ProxyStatus s) {
+    return s == ProxyStatus::Installed || s == ProxyStatus::Outdated || s == ProxyStatus::Modified;
+}
 
 struct GameState {
     std::filesystem::path exe;

@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "dds.h"
+#include "integrity.h"
 #include "settings.h"
 #include "version.h"
 
@@ -96,10 +97,16 @@ void Runtime::EnsureStarted() {
     std::call_once(once, [this] {
         InitializeCriticalSection(&logLock_);
         dump_ = new DumpState();
+        intact_ = CheckOwnSeal() == SealState::Valid;
         std::error_code ec;
         settingsStamp_ = fs::last_write_time(ModuleDirectory() / kDllSettingsFile, ec);
         fs::remove(ModuleDirectory() / kRedumpRequestFile, ec);  // left from a session that ended first
         LoadConfig();
+        if (!intact_) {
+            Log(false, "This d3d11.dll is damaged or was modified, so ReResorep is off: the game runs without "
+                       "mods. Repair it on ReResorep's Games tab.");
+            return;
+        }
         Rescan();
         std::thread([this] { WatchThread(); }).detach();
         std::thread([this] { DumpThread(); }).detach();
@@ -117,8 +124,8 @@ void Runtime::LoadConfig() {
     cfg->originalFolder = ResolveFolder(ini.GetOr(keys::kOriginalFolder, ""), L"original");
     cfg->moddedFolder = ResolveFolder(ini.GetOr(keys::kModdedFolder, ""), L"modded");
     cfg->lowImpact = ini.GetBool(keys::kLowImpact, false);
-    cfg->dumpTextures =
-        !cfg->lowImpact && ini.GetBool(keys::kModCreatorMode, false) && ini.GetBool(keys::kSaveTextures, false);
+    cfg->dumpTextures = intact_ && !cfg->lowImpact && ini.GetBool(keys::kModCreatorMode, false) &&
+                        ini.GetBool(keys::kSaveTextures, false);
     cfg->logEnabled = ini.GetBool(keys::kLogEnabled, false);
     cfg->logDebug = ini.GetOr(keys::kLogLevel, "") == "debug";
     cfg->logFile = ResolveFolder(ini.GetOr(keys::kLogFile, ""), L"dll.log");

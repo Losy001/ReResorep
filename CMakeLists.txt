@@ -14,6 +14,8 @@ add_compile_options($<$<COMPILE_LANGUAGE:CXX>:/W4> $<$<COMPILE_LANGUAGE:CXX>:/pe
                     $<$<COMPILE_LANGUAGE:CXX>:/utf-8>)
 
 set(RERESOREP_BIN ${CMAKE_BINARY_DIR}/bin)
+# ReResorep.exe and the proxy link here; their sealed copies go to bin (see reresorep_seal).
+set(RERESOREP_UNSEALED ${CMAKE_BINARY_DIR}/unsealed)
 
 # Single source of the version: project(... VERSION x.y.z) above.
 set(RERESOREP_GENERATED ${CMAKE_BINARY_DIR}/generated)
@@ -22,6 +24,7 @@ configure_file(core/version.h.in ${RERESOREP_GENERATED}/version.h @ONLY)
 add_library(resorep_core STATIC
     core/blowfish.cpp
     core/dds.cpp
+    core/integrity.cpp
     core/labels.cpp
     core/mod_package.cpp
     core/mod_state.cpp
@@ -31,6 +34,21 @@ add_library(resorep_core STATIC
     core/zip.cpp
 )
 target_include_directories(resorep_core PUBLIC core ${RERESOREP_GENERATED})
+target_link_libraries(resorep_core PUBLIC bcrypt)
+
+# Seals ReResorep.exe and the proxy after each link, so they can tell if their file was changed
+# (core/integrity.h). The linker's own output is left alone, or the build would see it as
+# changed and relink it every time; the sealed copy goes to `sealed`. A target that can't be
+# sealed fails its build.
+add_executable(reresorep_seal tools/seal.cpp)
+target_link_libraries(reresorep_seal PRIVATE resorep_core)
+function(reresorep_seal target sealed)
+    add_dependencies(${target} reresorep_seal)
+    add_custom_command(TARGET ${target} POST_BUILD
+        COMMAND reresorep_seal $<TARGET_FILE:${target}> ${sealed}
+        COMMENT "Sealing ${sealed}"
+        VERBATIM)
+endfunction()
 
 add_subdirectory(proxy)
 add_subdirectory(manager)
@@ -60,13 +78,15 @@ add_test(NAME core_tests COMMAND core_tests)
 add_executable(proxy_test tests/proxy_test.cpp)
 target_link_libraries(proxy_test PRIVATE resorep_core)
 add_dependencies(proxy_test proxy)
-add_test(NAME proxy_test COMMAND proxy_test $<TARGET_FILE:proxy>)
+add_test(NAME proxy_test COMMAND proxy_test ${RERESOREP_BIN}/proxy/d3d11.dll)
+add_test(NAME proxy_tamper_test COMMAND proxy_test ${RERESOREP_BIN}/proxy/d3d11.dll tampered)
 
 add_executable(manager_test tests/manager_test.cpp manager/library.cpp manager/games.cpp manager/win_util.cpp
     manager/theme.cpp)
 target_include_directories(manager_test PRIVATE manager ${RERESOREP_GENERATED})
 target_link_libraries(manager_test PRIVATE resorep_core imgui shell32 ole32 version bcrypt)
-add_test(NAME manager_test COMMAND manager_test)
+add_dependencies(manager_test proxy)
+add_test(NAME manager_test COMMAND manager_test ${RERESOREP_BIN}/proxy/d3d11.dll)
 
 add_executable(analyzer_test tests/analyzer_test.cpp manager/analyzer.cpp)
 target_include_directories(analyzer_test PRIVATE manager)

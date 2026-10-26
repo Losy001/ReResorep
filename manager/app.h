@@ -18,6 +18,7 @@
 
 #include "analyzer.h"
 #include "games.h"
+#include "integrity.h"
 #include "labels.h"
 #include "mod_package.h"
 #include "library.h"
@@ -169,6 +170,7 @@ private:
     Library library_;
     ManagerSettings settings_;
     std::vector<GameState> games_;
+    resorep::SealState bundledSeal_ = resorep::SealState::Unreadable;  // proxy\d3d11.dll, checked in RefreshGames
     LabelStore labels_;
     std::unique_ptr<TextureAnalyzer> analyzer_;
     std::optional<SimilarSearch> similar_;

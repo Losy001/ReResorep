@@ -135,6 +135,23 @@ background when a game is added, and again whenever the exe changes.
   **Fix…** button either moves the marks of every mod made for the old exe to the new one (same
   build, patched) or leaves them alone (a different build).
 
+### Damaged or modified copies
+
+Each build seals `ReResorep.exe` and `proxy\d3d11.dll`. A small tool (`tools/seal.cpp`) writes
+the SHA-256 of the file into a reserved slot inside the file, and each one checks itself when it
+starts:
+
+- `ReResorep.exe` that doesn't match shows an error and doesn't start.
+- A `d3d11.dll` that doesn't match still loads, so the game starts, but it only passes calls
+  through: no mods and no dumps. Its `dll.log` says why. The Games tab shows *Proxy modified*,
+  and **Repair** installs a fresh copy.
+- The manager won't install a bundled `proxy\d3d11.dll` that doesn't match.
+
+The digest leaves out the slot, the PE checksum and an Authenticode certificate at the end of the
+file, so the files can still be code-signed after sealing. Proxies from before sealing count as
+older, not modified. This catches damaged downloads and copies changed by anything that doesn't
+reseal them. It won't stop someone who patches the check itself out; only code signing does that.
+
 ## Building
 
 Needs Visual Studio 2022 with the C++ workload (it includes CMake).
@@ -146,6 +163,8 @@ ctest --test-dir build -C Release --output-on-failure
 ```
 
 The output goes to `build/bin/`: `ReResorep.exe` and `proxy/d3d11.dll`. Ship that folder as-is.
+Both are linked into `build/unsealed/` first and sealed into `build/bin/` (see *Damaged or modified
+copies*). The copies in `build/unsealed/` won't start; Visual Studio runs the sealed exe.
 
 ## What changed compared to the original
 

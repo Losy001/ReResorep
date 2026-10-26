@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "app.h"
+#include "integrity.h"
 #include "version.h"
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM, LPARAM);
@@ -140,6 +141,17 @@ void SetupStyle(float scale) {
 }  // namespace
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
+    // A damaged or modified copy doesn't start (core/integrity.h).
+    if (const resorep::SealState seal = resorep::CheckOwnSeal(); seal != resorep::SealState::Valid) {
+        MessageBoxW(nullptr,
+                    seal == resorep::SealState::Unreadable
+                        ? L"ReResorep could not read its own file to check it, so it won't start.\n\n"
+                          L"Make sure ReResorep.exe isn't blocked by another program, then try again."
+                        : L"ReResorep.exe is damaged or was modified, so it won't start.\n\n"
+                          L"Download ReResorep again from its release page.",
+                    L"ReResorep " RERESOREP_VERSION_WSTRING, MB_ICONERROR | MB_OK);
+        return 1;
+    }
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
     ImGui_ImplWin32_EnableDpiAwareness();
 

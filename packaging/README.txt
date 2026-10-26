@@ -45,6 +45,15 @@ Making your own mods
   (saved as !reresorep_game.ini in the mod's folder).
 
 
+Damaged or modified files
+------------------------------------------------------------------------------
+ReResorep.exe and proxy\d3d11.dll check themselves when they start. If
+ReResorep.exe was damaged or changed, it shows an error and doesn't start:
+download ReResorep again. If the d3d11.dll in a game folder was, the game
+still starts but without mods; the Games tab shows "Proxy modified" and
+"Repair" puts a fresh copy there.
+
+
 Removing ReResorep
 ------------------------------------------------------------------------------
 Games tab -> "Uninstall" for each game (this restores any d3d11.dll the game

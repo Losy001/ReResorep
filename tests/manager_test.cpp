@@ -231,11 +231,31 @@ static void TestBatch() {
     fs::remove_all(root);
 }
 
-int main() {
+// A proxy in the game folder that fails its seal shows as Modified; an intact one doesn't.
+static void TestProxyStatus(const fs::path& builtProxy) {
+    const fs::path root = TempDir(L"reresorep_proxy_status_test");
+    const fs::path exe = root / L"Game" / L"RainbowSix.exe";
+    Touch(exe, "game");
+    const fs::path dll = exe.parent_path() / L"d3d11.dll";
+    fs::copy_file(builtProxy, dll);
+    ManagerSettings s;
+    // Not the bundled copy (there is none next to this test), but intact.
+    CHECK(InspectGame(exe, s).status == ProxyStatus::Outdated);
+    std::ofstream(dll, std::ios::binary | std::ios::app) << "appended";
+    const GameState g = InspectGame(exe, s);
+    CHECK(g.status == ProxyStatus::Modified && HasOurProxy(g.status));
+    CHECK(!InstallProxy(exe, s).empty());  // no intact bundled proxy to install
+    CHECK(UninstallProxy(exe).empty() && !fs::exists(dll));  // still recognised as ours
+    fs::remove_all(root);
+}
+
+int main(int argc, char** argv) {
     setvbuf(stdout, nullptr, _IONBF, 0);
     TestWinnersPerBuild();
     TestSettingsAndHashing();
     TestBatch();
+    if (argc > 1) TestProxyStatus(argv[1]);
+    else CHECK(!"pass the built d3d11.dll");
     fs::remove(ExeDirectory() / L"texture_info.cache");  // written by the Library above
     std::printf(g_failures ? "%d check(s) failed\n" : "all manager checks passed\n", g_failures);
     return g_failures ? 1 : 0;

@@ -6,11 +6,15 @@
 #include <wrl/client.h>
 
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
+#include <string>
 #include <vector>
 
 #include "dds.h"
+#include "integrity.h"
 #include "mod_state.h"
 #include "resorep_crypto.h"
 #include "resorep_hash.h"
@@ -70,12 +74,90 @@ static UINT CreateAndGetWidth(ID3D11Device* dev, const GameTexture& t) {
     return desc.Width;
 }
 
+static std::vector<uint8_t> ReadBytes(const fs::path& p) {
+    std::ifstream in(p, std::ios::binary);
+    return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+}
+
+// The build seals the proxy; any change to it shows, except code-signing it later.
+static void TestSeal(const fs::path& dll) {
+    using resorep::CheckSeal;
+    using resorep::SealState;
+    const std::vector<uint8_t> sealed = ReadBytes(dll);
+    CHECK(CheckSeal(sealed) == SealState::Valid);
+
+    std::vector<uint8_t> f = sealed;
+    f[f.size() / 2] ^= 1;  // a changed byte
+    CHECK(CheckSeal(f) == SealState::Invalid);
+    f = sealed;
+    f.insert(f.end(), 64, 0xCC);  // something appended
+    CHECK(CheckSeal(f) == SealState::Invalid);
+
+    // Signed after sealing: a certificate table at the end, its directory entry and the PE
+    // checksum are set. None of that is part of the digest.
+    uint32_t pe;
+    std::memcpy(&pe, &sealed[0x3C], 4);
+    const size_t security = pe + 24 + 112 + 4 * 8;  // PE32+ data directory 4
+    // The table starts 8-aligned; the linker already aligns the file, so a signer adds no padding.
+    CHECK(sealed.size() % 8 == 0);
+    f = sealed;
+    const uint32_t certAt = uint32_t(f.size()), certSize = 24;
+    f.insert(f.end(), certSize, 0xAB);
+    std::memcpy(&f[security], &certAt, 4);
+    std::memcpy(&f[security + 4], &certSize, 4);
+    f[pe + 24 + 64] ^= 0x5A;  // checksum
+    CHECK(CheckSeal(f) == SealState::Valid);
+    std::vector<uint8_t> signedFile = f;
+    signedFile.back() ^= 1;  // inside the certificate: not hashed
+    CHECK(CheckSeal(signedFile) == SealState::Valid);
+    signedFile = f;
+    signedFile.insert(signedFile.end(), 8, 0);  // the table must reach the end of the file
+    CHECK(CheckSeal(signedFile) == SealState::Invalid);
+    // A "certificate" covering nearly the whole file would leave the seal itself unhashed.
+    signedFile = sealed;
+    const uint32_t earlyAt = 0x10, earlySize = uint32_t(sealed.size()) - earlyAt;
+    std::memcpy(&signedFile[security], &earlyAt, 4);
+    std::memcpy(&signedFile[security + 4], &earlySize, 4);
+    CHECK(CheckSeal(signedFile) == SealState::Invalid);
+}
+
+// Run as its own process (proxy_test <dll> tampered): a proxy that fails its seal loads and
+// passes calls through, but replaces nothing.
+static int TestTamperedProxy(const fs::path& dll) {
+    wchar_t tmp[MAX_PATH];
+    GetTempPathW(MAX_PATH, tmp);
+    const fs::path dir = fs::path(tmp) / L"reresorep_proxy_tamper_test";
+    fs::remove_all(dir);
+    fs::create_directories(dir / L"modded");
+    std::vector<uint8_t> f = ReadBytes(dll);
+    f.insert(f.end(), 64, 0xCC);
+    WriteFile(dir / L"d3d11.dll", f);
+    std::ofstream(dir / L"dllsettings.ini") << "modded_textures_folder=modded\ndll_log_enabled=true\n";
+    const GameTexture tex = MakeGameTexture(0x0F1E2D);
+    WriteFile(dir / L"modded" / (std::to_wstring(tex.hash) + L".dds"), SolidDds(8, 8, 0xFF0000FF));
+
+    HMODULE proxy = LoadLibraryW((dir / L"d3d11.dll").c_str());
+    CHECK(proxy != nullptr);
+    if (!proxy) return 1;
+    auto create = reinterpret_cast<PFN_D3D11_CREATE_DEVICE>(GetProcAddress(proxy, "D3D11CreateDevice"));
+    ComPtr<ID3D11Device> dev;
+    CHECK(create && SUCCEEDED(create(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0, nullptr, 0, D3D11_SDK_VERSION, &dev,
+                                     nullptr, nullptr)));
+    if (dev) CHECK(CreateAndGetWidth(dev.Get(), tex) == 64);  // the game's own texture
+    const std::vector<uint8_t> log = ReadBytes(dir / L"dll.log");
+    CHECK(std::string(log.begin(), log.end()).find("damaged or was modified") != std::string::npos);
+    std::printf(g_failures ? "%d check(s) failed\n" : "all tampered-proxy checks passed\n", g_failures);
+    return g_failures ? 1 : 0;
+}
+
 int main(int argc, char** argv) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);  // FAIL lines survive a crash
     if (argc < 2) {
-        std::printf("usage: proxy_test <d3d11.dll>\n");
+        std::printf("usage: proxy_test <d3d11.dll> [tampered]\n");
         return 2;
     }
+    if (argc > 2 && std::string(argv[2]) == "tampered") return TestTamperedProxy(argv[1]);
+    TestSeal(argv[1]);
     wchar_t tmp[MAX_PATH];
     GetTempPathW(MAX_PATH, tmp);
     const fs::path dir = fs::path(tmp) / L"reresorep_proxy_test";

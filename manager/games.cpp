@@ -9,6 +9,7 @@
 #include <fstream>
 #include <system_error>
 
+#include "integrity.h"
 #include "mod_state.h"
 #include "theme.h"
 #include "win_util.h"
@@ -235,6 +236,7 @@ const char* StatusText(ProxyStatus s) {
         case ProxyStatus::Outdated: return "Update available";
         case ProxyStatus::LegacyResorep: return "Old Resorep proxy";
         case ProxyStatus::Missing: return "Game not found";
+        case ProxyStatus::Modified: return "Proxy modified";
     }
     return "";
 }
@@ -257,11 +259,15 @@ GameState InspectGame(const fs::path& exe, const ManagerSettings& settings) {
     const fs::path dll = dir / L"d3d11.dll";
     const fs::path ori = dir / L"ori_d3d11.dll";
     if (fs::exists(dll, ec)) {
-        if (IsOurProxy(dll)) st.status = FilesEqual(dll, BundledProxy()) ? ProxyStatus::Installed : ProxyStatus::Outdated;
+        // A build from before sealing has no seal (NotSealed): that is just an older proxy.
+        if (IsOurProxy(dll))
+            st.status = CheckSealedFile(dll) == SealState::Invalid ? ProxyStatus::Modified
+                        : FilesEqual(dll, BundledProxy())             ? ProxyStatus::Installed
+                                                                      : ProxyStatus::Outdated;
         else if (IsLegacyProxy(dll)) st.status = ProxyStatus::LegacyResorep;
     }
     st.chainsOtherD3D11 = fs::exists(ori, ec) && !IsMicrosoftDll(ori) && !IsAnyProxy(ori);
-    if (st.status == ProxyStatus::Installed || st.status == ProxyStatus::Outdated) {
+    if (HasOurProxy(st.status)) {
         st.proxyVersion = FileVersionString(dll);
         if (st.proxyVersion.empty()) st.proxyVersion = "pre-2.0 build";  // built before version info existed
     } else if (st.status == ProxyStatus::LegacyResorep) {
@@ -298,6 +304,8 @@ std::string InstallProxy(const fs::path& exe, const ManagerSettings& settings) {
     const fs::path bundled = BundledProxy();
     std::error_code ec;
     if (!fs::exists(bundled, ec)) return "proxy\\d3d11.dll is missing next to ReResorep.exe";
+    if (CheckSealedFile(bundled) != SealState::Valid)
+        return "proxy\\d3d11.dll next to ReResorep.exe is damaged or was modified - download ReResorep again";
     if (!fs::exists(exe, ec)) return "Game executable not found";
 
     const fs::path dir = exe.parent_path();
@@ -316,6 +324,7 @@ std::string InstallProxy(const fs::path& exe, const ManagerSettings& settings) {
 
     fs::copy_file(bundled, dll, fs::copy_options::overwrite_existing, ec);
     if (ec) return Describe("Could not copy d3d11.dll", ec);
+    if (CheckSealedFile(dll) != SealState::Valid) return "The copied d3d11.dll does not match - try installing again";
     return WriteGameSettings(exe, settings);
 }
 

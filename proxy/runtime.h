@@ -29,6 +29,9 @@ public:
     static Runtime& Get();
 
     void EnsureStarted();
+    // The proxy's file still matches its seal (core/integrity.h). If not, it only passes calls
+    // through to the real d3d11.dll: no hooks, no mods, no dumps. Valid after EnsureStarted.
+    bool intact() const { return intact_; }
 
     std::shared_ptr<const Config> config() const { return config_.load(std::memory_order_acquire); }
     std::shared_ptr<const TextureIndex> index() const { return index_.load(std::memory_order_acquire); }
@@ -52,6 +55,7 @@ private:
     struct DumpState;
     DumpState* dump_ = nullptr;
     std::filesystem::file_time_type settingsStamp_{};
+    bool intact_ = false;
     CRITICAL_SECTION logLock_;
     FILE* logFile_ = nullptr;
 };

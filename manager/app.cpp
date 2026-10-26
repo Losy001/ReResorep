@@ -186,7 +186,7 @@ void App::SetOwnFolders(const fs::path& exe, bool own) {
     if (own) settings_.profile = exe;  // show the new folders right away
     std::string error = settings_.Save() ? "" : "Could not save reresorep.ini";
     for (const GameState& g : games_)
-        if (GameKey(g.exe) == GameKey(exe) && (g.status == ProxyStatus::Installed || g.status == ProxyStatus::Outdated))
+        if (GameKey(g.exe) == GameKey(exe) && HasOurProxy(g.status))
             if (const std::string e = WriteGameSettings(exe, settings_); !e.empty()) error = e;
     RefreshGames();
     ApplyProfile();
@@ -419,6 +419,7 @@ void App::Status(const std::string& error, const std::string& success) {
 }
 
 void App::RefreshGames() {
+    bundledSeal_ = CheckSealedFile(BundledProxy());
     games_.clear();
     for (const auto& exe : settings_.games) games_.push_back(InspectGame(exe, settings_));
     StartHashing();
@@ -433,7 +434,7 @@ void App::ApplySettings() {
     // Installed proxies watch their dllsettings.ini, so this reaches a running game.
     std::string error;
     for (const GameState& g : games_) {
-        if (g.status == ProxyStatus::Installed || g.status == ProxyStatus::Outdated) {
+        if (HasOurProxy(g.status)) {
             const std::string e = WriteGameSettings(g.exe, settings_);
             if (!e.empty()) error = ToUtf8(g.exe.filename()) + ": " + e;
         }
@@ -776,7 +777,7 @@ void App::Frame() {
         settings_.Save();
         // Installed proxies learn their game's hash (and own folders) from dllsettings.ini.
         for (const GameState& g : games_)
-            if (g.status == ProxyStatus::Installed || g.status == ProxyStatus::Outdated) WriteGameSettings(g.exe, settings_);
+            if (HasOurProxy(g.status)) WriteGameSettings(g.exe, settings_);
         RefreshGames();  // hashes anything added meanwhile
         ApplyProfile();
     }
@@ -1264,19 +1265,21 @@ void App::DrawToolbarDumps() {
 
 void App::Redump() {
     std::string sent, error;
-    bool outdated = false;
+    bool outdated = false, modified = false;
     for (const GameState& g : games_) {
         // Only games that dump into the folder these tabs show.
         if (settings_.FoldersFor(g.exe).second != library_.originalFolder() || FindProcesses(g.exe).empty()) continue;
         if (g.status == ProxyStatus::Outdated) outdated = true;  // an older proxy ignores the request
+        if (g.status == ProxyStatus::Modified) modified = true;  // does nothing at all
         if (g.status != ProxyStatus::Installed) continue;
         const std::string e = RequestRedump(g.exe);
         if (!e.empty()) error = ToUtf8(g.exe.filename()) + ": " + e;
         else sent += (sent.empty() ? "" : ", ") + ToUtf8(g.exe.filename());
     }
     if (error.empty() && sent.empty())
-        error = outdated ? "The running game has an older proxy - update it on the Games tab, then restart the game."
-                         : "Start the game first (with the proxy installed, using the folders shown here).";
+        error = modified   ? "The running game's proxy is damaged or modified - repair it on the Games tab, then restart the game."
+                : outdated ? "The running game has an older proxy - update it on the Games tab, then restart the game."
+                           : "Start the game first (with the proxy installed, using the folders shown here).";
     Status(error, "Redump requested for " + sent + ": textures are dumped again as the game loads them");
 }
 
@@ -2164,6 +2167,9 @@ void App::DrawGames() {
     ImGui::TextColored(kDimColor, "Close the game before installing or removing. For Siege pick RainbowSix.exe.");
     if (!Exists(BundledProxy()))
         ImGui::TextColored(kErrorColor, "proxy\\d3d11.dll is missing next to ReResorep.exe - reinstall ReResorep.");
+    else if (bundledSeal_ != SealState::Valid)
+        ImGui::TextColored(kErrorColor, "proxy\\d3d11.dll next to ReResorep.exe is damaged or was modified - "
+                                        "download ReResorep again. Installing is blocked until then.");
     ImGui::Spacing();
 
     if (games_.empty()) {
@@ -2235,6 +2241,9 @@ void App::DrawGames() {
             if (g.status == ProxyStatus::Outdated)
                 ImGui::SetItemTooltip("This ReResorep has proxy %s. Click Update to install it.", RERESOREP_VERSION_STRING);
         }
+        if (g.status == ProxyStatus::Modified)
+            ImGui::SetItemTooltip("The d3d11.dll in the game folder was damaged or changed after it was built, so it\n"
+                                  "does nothing: the game runs without mods. Click Repair to install a fresh copy.");
         if (g.chainsOtherD3D11) {
             part(kDimColor, "+ ori_d3d11.dll");
             ImGui::SetItemTooltip("Another d3d11.dll (for example ReShade) was kept as ori_d3d11.dll and still loads.");
@@ -2258,6 +2267,7 @@ void App::DrawGames() {
         ImGui::TableNextColumn();
         const bool installed = g.status == ProxyStatus::Installed;
         const char* installLabel = installed                                  ? "Reinstall"
+                                   : g.status == ProxyStatus::Modified    ? "Repair"
                                    : g.status == ProxyStatus::NotInstalled ? "Install"
                                                                            : "Update";
         const bool closingThis = closeJob_.valid() && closingExe_ == g.exe;
