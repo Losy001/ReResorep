@@ -93,12 +93,18 @@ HRESULT STDMETHODCALLTYPE HookedCreateTexture2D(ID3D11Device* self, const D3D11_
         return original(self, desc, init, out);
 
     Runtime& rt = Runtime::Get();
-    const uint32_t hash = ComputeTextureHash(init->pSysMem, init->SysMemSlicePitch);
-    rt.Log(true, "Game is loading texture %u (%ux%u %s)", hash, desc->Width, desc->Height, FormatName(desc->Format));
-
-    if (rt.config()->dumpTextures) rt.QueueDump(hash, *desc, init);
-
+    const auto cfg = rt.config();
     const auto index = rt.index();  // keeps this snapshot alive while we use it
+    // Nothing to replace or dump: don't read the texture's data at all.
+    if (index->size() == 0 && !cfg->dumpTextures && !(cfg->logEnabled && cfg->logDebug))
+        return original(self, desc, init, out);
+
+    const uint32_t hash = ComputeTextureHash(init->pSysMem, init->SysMemSlicePitch);
+    if (cfg->logDebug)
+        rt.Log(true, "Game is loading texture %u (%ux%u %s)", hash, desc->Width, desc->Height, FormatName(desc->Format));
+
+    if (cfg->dumpTextures) rt.QueueDump(hash, *desc, init);
+
     if (const std::filesystem::path* mod = index->Find(hash)) {
         if (CreateReplacement(original, self, *mod, *desc, out)) {
             rt.Log(true, "Overriding texture %u with %ls", hash, mod->c_str());

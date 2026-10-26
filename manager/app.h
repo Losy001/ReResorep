@@ -147,6 +147,9 @@ private:
     const GameState* ProfileGame() const;  // the picked game, nullptr for Default
     void DrawProfilePicker();
     void SetOwnFolders(const std::filesystem::path& exe, bool own);
+    // forget: also uninstall the proxy and forget the game's hash and own folders;
+    // recycleFolders: and move its own folders to the Recycle Bin.
+    void RemoveGame(const std::filesystem::path& exe, bool forget, bool recycleFolders);
     void SetModGame(const std::wstring& rel, const GameState* game);  // nullptr = any game
     std::string ModGameName(const std::string& sha) const;            // for tooltips and menus
     void StartHashing();                   // works out missing exe hashes in the background
@@ -196,6 +199,7 @@ private:
     std::chrono::steady_clock::time_point lastRunningCheck_;
     std::future<CloseResult> closeJob_;
     std::filesystem::path closingExe_;
+    bool removeRecycleFolders_ = false;  // the Remove popup's "also move its folders" box
     size_t deleteTotal_ = 0;
     std::future<std::vector<std::pair<std::filesystem::path, ExeHash>>> hashJob_;
 

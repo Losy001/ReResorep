@@ -16,6 +16,7 @@ struct Config {
     std::filesystem::path originalFolder;
     std::filesystem::path moddedFolder;
     bool dumpTextures = false;  // save_textures, honoured only in mod creator mode (as before)
+    bool lowImpact = false;     // see keys::kLowImpact
     bool logEnabled = false;
     bool logDebug = false;
     std::filesystem::path logFile;
@@ -41,7 +42,7 @@ private:
     Runtime() = default;
     void LoadConfig();
     void Rescan();
-    void SyncDumpsWithDisk();  // "already dumped" = what is in the dump folder (plus pending writes)
+    void AddDumpsOnDisk();     // what the dump folder already has counts as dumped
     void StartRedump();        // from now on, dump every texture again as the game loads it
     void WatchThread();
     void DumpThread();

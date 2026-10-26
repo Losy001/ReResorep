@@ -53,6 +53,13 @@ static GameTexture MakeGameTexture(uint32_t seed) {
     return t;
 }
 
+// Never throws: a missing file reads as no time, so a failed check can't end the test early.
+static fs::file_time_type WriteTime(const fs::path& p) {
+    std::error_code ec;
+    const auto t = fs::last_write_time(p, ec);
+    return ec ? fs::file_time_type{} : t;
+}
+
 static UINT CreateAndGetWidth(ID3D11Device* dev, const GameTexture& t) {
     D3D11_TEXTURE2D_DESC desc{64, 64, 1, 1, DXGI_FORMAT_R8G8B8A8_UNORM, {1, 0}, D3D11_USAGE_IMMUTABLE,
                               D3D11_BIND_SHADER_RESOURCE, 0, 0};
@@ -64,6 +71,7 @@ static UINT CreateAndGetWidth(ID3D11Device* dev, const GameTexture& t) {
 }
 
 int main(int argc, char** argv) {
+    std::setvbuf(stdout, nullptr, _IONBF, 0);  // FAIL lines survive a crash
     if (argc < 2) {
         std::printf("usage: proxy_test <d3d11.dll>\n");
         return 2;
@@ -74,12 +82,14 @@ int main(int argc, char** argv) {
     fs::remove_all(dir);
     fs::create_directories(dir / L"modded");
     fs::copy_file(argv[1], dir / L"d3d11.dll");
-    {
+    auto writeSettings = [&](bool lowImpact) {
         std::ofstream ini(dir / L"dllsettings.ini");
         ini << "modded_textures_folder=modded\noriginal_textures_folder=original\n"
                "mod_creator_mode_enabled=true\nsave_textures=true\ndll_log_enabled=true\ndll_log_level=debug\n"
-               "game_exe_sha256=" << std::string(64, 'c') << "\n";
-    }
+               "game_exe_sha256=" << std::string(64, 'c') << "\nlow_impact_mode=" << (lowImpact ? "true" : "false")
+            << "\n";
+    };
+    writeSettings(false);
 
     const GameTexture plain = MakeGameTexture(0x112233);
     const GameTexture encrypted = MakeGameTexture(0x445566);
@@ -166,32 +176,58 @@ int main(int argc, char** argv) {
               untouched.hash);
 
     // Not dumped twice while the file exists...
-    const auto firstWrite = fs::last_write_time(dumped);
+    const auto firstWrite = WriteTime(dumped);
     Sleep(1500);
     CreateAndGetWidth(dev.Get(), untouched);
     Sleep(500);
-    CHECK(fs::last_write_time(dumped) == firstWrite);
-    // ...but deleted while the game runs, it is dumped again the next time the game loads it.
+    CHECK(WriteTime(dumped) == firstWrite);
+    // ...nor after it was deleted while the game runs, until a redump request.
     fs::remove(dumped);
     Sleep(1500);
+    CreateAndGetWidth(dev.Get(), untouched);
+    Sleep(500);
+    CHECK(!fs::exists(dumped));
+    auto requestRedump = [&] {
+        std::ofstream(dir / L"reresorep_redump.request").close();
+        for (int i = 0; i < 40 && fs::exists(dir / L"reresorep_redump.request"); ++i) Sleep(50);
+        CHECK(!fs::exists(dir / L"reresorep_redump.request"));  // the proxy takes the request
+    };
+    requestRedump();
     CreateAndGetWidth(dev.Get(), untouched);
     for (int i = 0; i < 40 && !fs::exists(dumped); ++i) Sleep(50);
     CHECK(fs::exists(dumped));
 
-    // A redump request (the manager's Redump button) rewrites dumps that already exist, once.
+    // A redump request (the manager's Redump button) also rewrites dumps that already exist, once.
     Sleep(1500);
-    const auto beforeRedump = fs::last_write_time(dumped);
-    std::ofstream(dir / L"reresorep_redump.request").close();
-    for (int i = 0; i < 40 && fs::exists(dir / L"reresorep_redump.request"); ++i) Sleep(50);
-    CHECK(!fs::exists(dir / L"reresorep_redump.request"));  // the proxy takes the request
+    const auto beforeRedump = WriteTime(dumped);
+    requestRedump();
     CreateAndGetWidth(dev.Get(), untouched);
-    for (int i = 0; i < 40 && fs::last_write_time(dumped) == beforeRedump; ++i) Sleep(50);
-    const auto redumpedAt = fs::last_write_time(dumped);
+    for (int i = 0; i < 40 && WriteTime(dumped) == beforeRedump; ++i) Sleep(50);
+    const auto redumpedAt = WriteTime(dumped);
     CHECK(redumpedAt != beforeRedump);
     Sleep(1500);
     CreateAndGetWidth(dev.Get(), untouched);
     Sleep(500);
-    CHECK(fs::last_write_time(dumped) == redumpedAt);
+    CHECK(WriteTime(dumped) == redumpedAt);
+
+    // Low impact mode: mods still apply, but nothing is dumped and the modded folder isn't watched.
+    writeSettings(true);
+    Sleep(1500);
+    CHECK(CreateAndGetWidth(dev.Get(), plain) == 32);
+    const GameTexture quiet = MakeGameTexture(0x5A5A5A);
+    const fs::path quietDump = dir / L"original" / (std::to_wstring(quiet.hash) + L".dds");
+    CHECK(CreateAndGetWidth(dev.Get(), quiet) == 64);
+    Sleep(500);
+    CHECK(!fs::exists(quietDump));
+    WriteFile(dir / L"modded" / (std::to_wstring(quiet.hash) + L".dds"), SolidDds(4, 4, 0xFF654321));
+    Sleep(1500);
+    CHECK(CreateAndGetWidth(dev.Get(), quiet) == 64);  // added while playing: not picked up yet
+    // Turned off again: the settings change re-reads the mods, and dumping is back.
+    writeSettings(false);
+    Sleep(1500);
+    CHECK(CreateAndGetWidth(dev.Get(), quiet) == 4);
+    for (int i = 0; i < 40 && !fs::exists(quietDump); ++i) Sleep(50);
+    CHECK(fs::exists(quietDump));
 
     std::printf(g_failures ? "%d check(s) failed (log: %ls)\n" : "all proxy checks passed\n", g_failures,
                 (dir / L"dll.log").c_str());

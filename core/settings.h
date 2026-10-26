@@ -40,6 +40,9 @@ inline constexpr char kLogLevel[] = "dll_log_level";
 // SHA-256 of the game's exe (lower-case hex): the proxy skips mods made for another build.
 // Also the key in a mod's !reresorep_game.ini.
 inline constexpr char kGameSha256[] = "game_exe_sha256";
+// Only replaces textures: no dumping or redumps, and the modded folder is read when the game
+// starts (or its settings change) instead of being watched.
+inline constexpr char kLowImpact[] = "low_impact_mode";
 }  // namespace keys
 
 inline constexpr wchar_t kDllSettingsFile[] = L"dllsettings.ini";

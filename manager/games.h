@@ -28,6 +28,7 @@ struct ManagerSettings {
     std::filesystem::path originalFolder;
     bool modCreatorMode = false;
     bool saveTextures = false;
+    bool lowImpact = false;  // the proxy only replaces textures (keys::kLowImpact)
     bool logEnabled = false;
     bool logDebug = false;
     // Texture manager view options.
@@ -48,6 +49,9 @@ struct ManagerSettings {
     std::map<std::wstring, std::string> ownFolders;
     std::filesystem::path profile;              // game shown on the Mods/Dumps tabs; empty = Default
 
+    // Whether installed proxies dump textures.
+    bool Dumping() const { return modCreatorMode && saveTextures && !lowImpact; }
+
     static std::filesystem::path File();
     void Load();
     bool Save() const;
@@ -58,6 +62,12 @@ struct ManagerSettings {
     bool UsesOwnFolders(const std::filesystem::path& exe) const;
     // modded and original folders the game's proxy uses: its own (games\<hash>) or the Default ones.
     std::pair<std::filesystem::path, std::filesystem::path> FoldersFor(const std::filesystem::path& exe) const;
+    // Another game, listed or remembered after Remove from list, uses the same own folders
+    // (two copies of the same build).
+    bool SharesOwnFolders(const std::filesystem::path& exe) const;
+    // Takes the game off the list. Its hash and own folders are kept for when it is added back,
+    // unless `forget`.
+    void RemoveGame(const std::filesystem::path& exe, bool forget);
 };
 
 // Case-insensitive key for a game exe path.

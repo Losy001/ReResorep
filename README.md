@@ -24,8 +24,14 @@ Existing Resorep texture packs keep working unchanged. That includes `<hash>.dds
    imported directly; for any others you're asked which hash they replace.
 4. To find hashes, open **Settings** and turn on *Mod creator mode* and *Dump textures*, then play.
    The **Dumps** tab fills with the game's textures. Select one and choose *Replace with .dds…*.
-   A texture already in the folder is not dumped again; **Redump** makes a running game
-   dump (and overwrite) every texture again as it loads it.
+   A texture already in the folder, or already dumped since the game started, is not dumped
+   again, even if you delete its file. **Redump** makes a running game dump (and overwrite)
+   every texture again as it loads it.
+5. Just playing? Turn on **Settings → Low impact mode**. The proxy then only replaces textures:
+   no dumping or Redump, and it reads your mods when the game starts instead of watching the
+   modded folder. Mods you change while playing apply on the next start, or when a setting
+   changes. In any mode, the proxy doesn't look at a texture's data when there's nothing to
+   replace or dump, and it rescans folders at background priority.
 
 ### Finding your way around big dump folders
 
@@ -104,6 +110,10 @@ background when a game is added, and again whenever the exe changes.
 - **Own folders:** tick *Own folders* on a game's row to give it its own mods and dumps in
   `games\<first 16 hex digits of its hash>\modded` and `\original`, next to `ReResorep.exe`.
   The proxy in that game picks up the change within a second.
+- **Removing a game:** *Remove…* offers two choices. *Remove from list* leaves the proxy installed
+  and remembers the game's own folders and hash, so adding the same exe back picks up where it
+  left off. *Remove completely* uninstalls the proxy and forgets both. It can also move the
+  game's own folders to the Recycle Bin, unless another game in the list uses them.
 - **Game picker:** the picker at the top of the **Mods** and **Dumps** tabs chooses which
   folders those tabs show: *Default (shared folders)*, or a game that has its own folders.
   *Redump* only goes to games that use the folders being shown.

@@ -55,6 +55,7 @@ void ManagerSettings::Load() {
     originalFolder = folder(keys::kOriginalFolder, L"original");
     modCreatorMode = ini.GetBool(keys::kModCreatorMode, false);
     saveTextures = ini.GetBool(keys::kSaveTextures, false);
+    lowImpact = ini.GetBool(keys::kLowImpact, false);
     logEnabled = ini.GetBool(keys::kLogEnabled, false);
     logDebug = ini.GetOr(keys::kLogLevel, "") == "debug";
     sortKey = ini.GetOr("ui_sort", "hash");
@@ -95,6 +96,7 @@ bool ManagerSettings::Save() const {
     ini.Set(keys::kOriginalFolder, WideToUtf8(originalFolder.wstring()));
     ini.SetBool(keys::kModCreatorMode, modCreatorMode);
     ini.SetBool(keys::kSaveTextures, saveTextures);
+    ini.SetBool(keys::kLowImpact, lowImpact);
     ini.SetBool(keys::kLogEnabled, logEnabled);
     ini.Set(keys::kLogLevel, logDebug ? "debug" : "info");
     ini.Set("ui_sort", sortKey);
@@ -108,13 +110,21 @@ bool ManagerSettings::Save() const {
     ini.SetBool("ui_hide_packed", hidePacked);
     ini.SetBool("ui_only_black_ice", onlyBlackIce);
     std::vector<std::string> list, hashes, own;
+    std::map<std::wstring, std::string> paths;  // GameKey -> the path as added
     for (const auto& g : games) {
         list.push_back(WideToUtf8(g.wstring()));
-        if (auto it = exeHashes.find(GameKey(g)); it != exeHashes.end())
-            hashes.push_back(it->second.sha256 + "|" + std::to_string(it->second.size) + "|" +
-                             std::to_string(it->second.modified) + "|" + it->second.previous + "|" + list.back());
-        if (auto it = ownFolders.find(GameKey(g)); it != ownFolders.end()) own.push_back(it->second + "|" + list.back());
+        paths[GameKey(g)] = list.back();
     }
+    // Games removed from the list are remembered too, so adding one back finds its own folders
+    // and notices if its exe changed meanwhile.
+    auto path = [&](const std::wstring& key) {
+        auto it = paths.find(key);
+        return it == paths.end() ? WideToUtf8(key) : it->second;
+    };
+    for (const auto& [key, h] : exeHashes)
+        hashes.push_back(h.sha256 + "|" + std::to_string(h.size) + "|" + std::to_string(h.modified) + "|" +
+                         h.previous + "|" + path(key));
+    for (const auto& [key, folder] : ownFolders) own.push_back(folder + "|" + path(key));
     ini.SetAll("game", list);
     ini.SetAll("game_sha256", hashes);
     ini.SetAll("game_own_folders", own);
@@ -153,6 +163,23 @@ std::pair<fs::path, fs::path> ManagerSettings::FoldersFor(const fs::path& exe) c
     if (it == ownFolders.end()) return {moddedFolder, originalFolder};
     const fs::path root = GameFolder(it->second);
     return {root / L"modded", root / L"original"};
+}
+
+bool ManagerSettings::SharesOwnFolders(const fs::path& exe) const {
+    auto it = ownFolders.find(GameKey(exe));
+    if (it == ownFolders.end()) return false;
+    return std::any_of(ownFolders.begin(), ownFolders.end(),
+                       [&](const auto& other) { return other.first != it->first && other.second == it->second; });
+}
+
+void ManagerSettings::RemoveGame(const fs::path& exe, bool forget) {
+    const std::wstring key = GameKey(exe);
+    std::erase_if(games, [&](const fs::path& g) { return GameKey(g) == key; });
+    if (forget) {
+        exeHashes.erase(key);
+        ownFolders.erase(key);
+    }
+    if (!profile.empty() && GameKey(profile) == key) profile.clear();
 }
 
 size_t RemarkMods(const fs::path& moddedRoot, const std::string& from, const std::string& to,
@@ -253,7 +280,9 @@ std::string WriteGameSettings(const fs::path& exe, const ManagerSettings& s) {
     ini.Set(keys::kModdedFolder, WideToUtf8(modded.wstring()));
     if (const std::string sha = s.ExeSha(exe); !sha.empty()) ini.Set(keys::kGameSha256, sha);
     ini.SetBool(keys::kModCreatorMode, s.modCreatorMode);
-    ini.SetBool(keys::kSaveTextures, s.saveTextures);
+    // Off in low impact mode too, for proxies from before it that don't know that key.
+    ini.SetBool(keys::kSaveTextures, s.saveTextures && !s.lowImpact);
+    ini.SetBool(keys::kLowImpact, s.lowImpact);
     ini.SetBool(keys::kLogEnabled, s.logEnabled);
     ini.Set(keys::kLogFile, WideToUtf8((exe.parent_path() / L"dll.log").wstring()));
     ini.Set(keys::kLogLevel, s.logDebug ? "debug" : "info");

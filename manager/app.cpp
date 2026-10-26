@@ -195,6 +195,31 @@ void App::SetOwnFolders(const fs::path& exe, bool own) {
                       (own ? "" : " (Default)") + ". A running game picks this up within a second.");
 }
 
+void App::RemoveGame(const fs::path& exe, bool forget, bool recycleFolders) {
+    const std::string name = ToUtf8(exe.parent_path().filename());
+    const fs::path own = settings_.UsesOwnFolders(exe) && !settings_.SharesOwnFolders(exe)
+                             ? settings_.FoldersFor(exe).first.parent_path()
+                             : fs::path();
+    if (forget) {
+        for (const GameState& g : games_) {
+            if (GameKey(g.exe) != GameKey(exe) || g.status == ProxyStatus::NotInstalled || g.status == ProxyStatus::Missing)
+                continue;
+            if (const std::string e = UninstallProxy(exe); !e.empty()) {
+                Status(e + " - " + name + " was not removed", "");
+                return;
+            }
+        }
+    }
+    settings_.RemoveGame(exe, forget);
+    std::string error = settings_.Save() ? "" : "Could not save reresorep.ini";
+    RefreshGames();
+    ApplyProfile();  // back to Default if that game was picked, before its folders go
+    if (recycleFolders && !own.empty() && Exists(own) && !MoveToRecycleBin(own))
+        error = "Could not move " + ToUtf8(own) + " to the Recycle Bin";
+    Status(error, forget ? "Removed " + name + " completely" + (recycleFolders && !own.empty() ? ", its folders are in the Recycle Bin" : "")
+                         : "Removed " + name + " from the list. Add it again to get its own folders back.");
+}
+
 std::string App::ModGameName(const std::string& sha) const {
     for (const GameState& g : games_)
         if (g.sha256 == sha) return GameLabel(g);
@@ -731,6 +756,10 @@ void App::Frame() {
 
     if (hashJob_.valid() && hashJob_.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
         for (auto& [exe, hash] : hashJob_.get()) {
+            // Removed while it was being hashed: don't bring a forgotten game back.
+            if (std::none_of(settings_.games.begin(), settings_.games.end(),
+                             [&](const fs::path& g) { return GameKey(g) == GameKey(exe); }))
+                continue;
             ExeHash& stored = settings_.exeHashes[GameKey(exe)];
             // A patched or replaced exe: mods marked for the old hash no longer load until the user
             // moves the marks (Games tab). The oldest unresolved hash is the one mods carry.
@@ -1204,16 +1233,19 @@ void App::DrawToolbarDumps() {
     if (ImGui::Button("Open folder")) OpenWithShell(library_.originalFolder());
     ImGui::SameLine();
     ImGui::Checkbox("Hide already modded", &hideModdedDumps_);
-    if (!settings_.modCreatorMode || !settings_.saveTextures) {
+    if (!settings_.Dumping()) {
         ImGui::SameLine();
-        ImGui::TextColored(kDimColor, "Dumping is off - enable it in Settings.");
+        ImGui::TextColored(kDimColor, settings_.lowImpact ? "Dumping is off - Low impact mode is on (Settings)."
+                                                          : "Dumping is off - enable it in Settings.");
     }
     ImGui::SameLine();
-    ImGui::BeginDisabled(!settings_.modCreatorMode || !settings_.saveTextures);
+    ImGui::BeginDisabled(!settings_.Dumping());
     if (ImGui::Button("Redump")) Redump();
     ImGui::EndDisabled();
     ImGui::SetItemTooltip("Makes a running game dump every texture again, overwriting the files here, as it\n"
-                          "loads it. Textures the game already has loaded come in on the next map or menu.");
+                          "loads it. Textures the game already has loaded come in on the next map or menu.\n\n"
+                          "Until then, a texture the game has dumped is not dumped again, even if you\n"
+                          "delete its file.");
     ImGui::SameLine();
     const bool deleting = deleteDumpsJob_.valid();
     ImGui::BeginDisabled(deleting || library_.dumps().empty());
@@ -1264,8 +1296,8 @@ void App::DrawDeleteDumpsPopup() {
     ImGui::BulletText("Your labels are kept (labels.txt). They show again when a texture is dumped again.");
     ImGui::BulletText("Your mods are not touched.");
     ImGui::BulletText("Other files in that folder are left alone.");
-    if (settings_.modCreatorMode && settings_.saveTextures)
-        ImGui::BulletText("Dumping is still on, so a running game will dump textures again.");
+    if (settings_.Dumping())
+        ImGui::BulletText("A running game won't dump these again until you press Redump.");
     ImGui::Spacing();
 
     ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.55f, 0.18f, 0.18f, 1.0f));
@@ -2143,7 +2175,7 @@ void App::DrawGames() {
     // they wrap on narrow windows); the folder path is what gets cut short.
     const ImGuiStyle& style = ImGui::GetStyle();
     float buttonsWidth = 0;
-    for (const char* label : {"Start", "Closing...", "Reinstall", "Uninstall", "Open folder", "[x] Own folders", "Remove"})
+    for (const char* label : {"Start", "Closing...", "Reinstall", "Uninstall", "Open folder", "[x] Own folders", "Remove..."})
         buttonsWidth += ImGui::CalcTextSize(label).x + style.FramePadding.x * 2 + style.ItemSpacing.x;
     buttonsWidth = std::min(buttonsWidth - style.ItemSpacing.x, ImGui::GetContentRegionAvail().x * 0.5f);
     ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(style.CellPadding.x * 2, 6.0f));
@@ -2169,7 +2201,6 @@ void App::DrawGames() {
         ImGui::TextColored(c, "%s", text);
     };
 
-    std::optional<size_t> remove;
     for (size_t i = 0; i < games_.size(); ++i) {
         const GameState& g = games_[i];
         const bool running = gameRunning_.count(g.exe.wstring()) && gameRunning_[g.exe.wstring()];
@@ -2297,20 +2328,48 @@ void App::DrawGames() {
                                       ToUtf8(g.ownFolders ? settings_.FoldersFor(g.exe).first.parent_path()
                                                           : GameFolder(g.sha256)).c_str());
             }
-            flow("Remove");
+            flow("Remove...");
         }
-        if (ImGui::Button("Remove")) remove = i;
-        ImGui::SetItemTooltip("Remove from this list (does not uninstall).");
+        if (ImGui::Button("Remove...")) {
+            removeRecycleFolders_ = false;
+            ImGui::OpenPopup("remove");
+        }
+        ImGui::SetItemTooltip("Remove from this list, or remove completely.");
+        if (ImGui::BeginPopup("remove")) {
+            const std::string label = name.empty() ? ToUtf8(g.exe.filename()) : name;
+            ImGui::Text("Remove %s?", label.c_str());
+            ImGui::Spacing();
+            if (ImGui::Button("Remove from list")) {
+                Defer([this, exe = g.exe] { RemoveGame(exe, false, false); });
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::TextColored(kDimColor, "The proxy stays installed. Its own folders and exe hash are remembered\n"
+                                          "for when you add it again.");
+            ImGui::Separator();
+            ImGui::BeginDisabled(running);
+            if (ImGui::Button("Remove completely")) {
+                Defer([this, exe = g.exe, recycle = g.ownFolders && removeRecycleFolders_] { RemoveGame(exe, true, recycle); });
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::EndDisabled();
+            if (running) ImGui::SetItemTooltip("Close the game first: its proxy is in use.");
+            ImGui::TextColored(kDimColor, "Uninstalls the proxy and forgets its own folders and exe hash.");
+            if (g.ownFolders) {
+                // Two copies of the same build share games\<hash>: leave it for the other one.
+                const fs::path own = settings_.FoldersFor(g.exe).first;
+                const bool shared = settings_.SharesOwnFolders(g.exe);
+                ImGui::BeginDisabled(shared || running);
+                if (shared) removeRecycleFolders_ = false;
+                ImGui::Checkbox("Also move its own mods and dumps to the Recycle Bin", &removeRecycleFolders_);
+                ImGui::EndDisabled();
+                ImGui::SetItemTooltip("%s", shared ? "Another game uses the same folders (it may be one you removed from the list)."
+                                                   : ToUtf8(own.parent_path()).c_str());
+            }
+            ImGui::EndPopup();
+        }
         ImGui::PopID();
     }
     ImGui::EndTable();
-
-    if (remove) {
-        settings_.games.erase(settings_.games.begin() + *remove);
-        settings_.Save();
-        RefreshGames();
-        ApplyProfile();  // back to Default if that game was picked
-    }
 }
 
 void App::DrawSettings() {
@@ -2342,7 +2401,15 @@ void App::DrawSettings() {
     folderRow("Load modded textures from", settings_.moddedFolder, L"Modded textures folder");
     folderRow("Save original (dumped) textures to", settings_.originalFolder, L"Original textures folder");
 
+    ImGui::SeparatorText("Performance");
+    changed |= ImGui::Checkbox("Low impact mode", &settings_.lowImpact);
+    HelpMarker("For just playing with your mods. The proxy only replaces textures: no dumping and no Redump, "
+               "and it reads your mods when the game starts instead of watching the folder, so nothing runs "
+               "in the background while you play.\n\nMods you add or switch on or off apply the next time "
+               "the game starts, or when you change a setting here.");
+
     ImGui::SeparatorText("Mod creator");
+    ImGui::BeginDisabled(settings_.lowImpact);
     changed |= ImGui::Checkbox("Mod creator mode", &settings_.modCreatorMode);
     HelpMarker("Needed for dumping. Replacement works with or without it.");
     ImGui::BeginDisabled(!settings_.modCreatorMode);
@@ -2350,6 +2417,8 @@ void App::DrawSettings() {
     HelpMarker("Each texture is saved once as <hash>.dds into the original folder. "
                "Writing happens on a background thread so the game does not stall.");
     ImGui::EndDisabled();
+    ImGui::EndDisabled();
+    if (settings_.lowImpact) ImGui::TextColored(kDimColor, "Dumping is off while Low impact mode is on.");
 
     ImGui::SeparatorText("Appearance");
     {

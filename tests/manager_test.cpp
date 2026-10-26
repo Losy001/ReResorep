@@ -155,12 +155,46 @@ static void TestSettingsAndHashing() {
     CHECK(loaded.UsesOwnFolders(fs::path(ToUpperForTest(exe.wstring()))));
 
     // The proxy's settings carry the game's own folders and its current hash.
+    loaded.modCreatorMode = loaded.saveTextures = loaded.lowImpact = true;
+    CHECK(!loaded.Dumping());  // low impact mode wins
     CHECK(WriteGameSettings(exe, loaded).empty());
     IniFile dll;
     CHECK(dll.Load(exe.parent_path() / kDllSettingsFile));
+    CHECK(dll.GetBool(keys::kLowImpact, false));
+    CHECK(!dll.GetBool(keys::kSaveTextures, true));  // older proxies don't know low_impact_mode
+    loaded.lowImpact = false;
     CHECK(dll.GetOr(keys::kGameSha256, "") == patched.sha256);
     CHECK(fs::path(Utf8ToWide(dll.GetOr(keys::kModdedFolder, ""))) == GameFolder(h.sha256) / L"modded");
     CHECK(fs::is_directory(GameFolder(h.sha256) / L"original"));
+
+    // Removed from the list and added back: it still has its own folders and its hash.
+    loaded.RemoveGame(exe, false);
+    CHECK(loaded.games.empty() && loaded.profile.empty());
+    CHECK(loaded.Save());
+    ManagerSettings removed;
+    removed.Load();
+    CHECK(removed.games.empty());
+    removed.games = {exe};
+    CHECK(removed.UsesOwnFolders(exe) && removed.FoldersFor(exe) == s.FoldersFor(exe));
+    CHECK(removed.ExeSha(exe) == patched.sha256 && removed.exeHashes[GameKey(exe)].previous == h.sha256);
+
+    // A second copy of the same build shares its folders, even while the first is off the list.
+    const fs::path copy = root / L"Copy" / L"RainbowSix.exe";
+    removed.ownFolders[GameKey(copy)] = h.sha256.substr(0, 16);
+    removed.RemoveGame(exe, false);
+    CHECK(removed.SharesOwnFolders(copy) && removed.SharesOwnFolders(exe));
+    removed.ownFolders.erase(GameKey(copy));
+    CHECK(!removed.SharesOwnFolders(exe));
+    removed.games = {exe};
+
+    // Removed completely: added back, it starts over on the Default folders.
+    removed.RemoveGame(fs::path(ToUpperForTest(exe.wstring())), true);
+    CHECK(removed.Save());
+    ManagerSettings forgotten;
+    forgotten.Load();
+    forgotten.games = {exe};
+    CHECK(!forgotten.UsesOwnFolders(exe) && forgotten.FoldersFor(exe).first == s.moddedFolder);
+    CHECK(forgotten.ExeSha(exe).empty() && forgotten.NeedsHash(exe));
 
     fs::remove(iniFile);
     fs::remove_all(GameFolder(h.sha256).parent_path());

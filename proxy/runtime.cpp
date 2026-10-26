@@ -33,6 +33,24 @@ uint32_t FullMipCount(uint32_t w, uint32_t h) {
     for (uint32_t m = std::max(w, h); m > 1; m >>= 1) ++levels;
     return levels;
 }
+
+thread_local bool t_isWatchThread = false;
+
+// Folder scans on the watch thread run at background CPU and disk priority, so they never
+// compete with the game. Only the scan itself: a background thread holding a lock the game's
+// threads wait for (the log, the dump state, the index pointer) could stall them.
+class BackgroundScan {
+public:
+    BackgroundScan() : on_(t_isWatchThread && SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN)) {}
+    ~BackgroundScan() {
+        if (on_) SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_END);
+    }
+    BackgroundScan(const BackgroundScan&) = delete;
+    BackgroundScan& operator=(const BackgroundScan&) = delete;
+
+private:
+    bool on_;
+};
 }  // namespace
 
 struct Runtime::DumpState {
@@ -48,12 +66,12 @@ struct Runtime::DumpState {
     std::condition_variable wake;
     std::deque<Job> jobs;
     size_t pendingBytes = 0;
-    std::unordered_set<uint32_t> seen;      // hashes on disk, queued or being written: not dumped again
+    // Hashes not dumped again until a redump request: on disk when dumping started, or dumped
+    // since (even if the file was deleted meanwhile). The dump folder is not watched for it.
+    std::unordered_set<uint32_t> seen;
     std::unordered_set<uint32_t> inFlight;  // queued or being written, not on disk yet
-    // After a redump request, files on disk from before it no longer count as dumped;
-    // only what was written since (and is still there) does.
+    // Since a redump request, files on disk from before it don't count as dumped.
     bool redumping = false;
-    std::unordered_set<uint32_t> redumped;
 };
 
 fs::path ModuleDirectory() {
@@ -85,7 +103,8 @@ void Runtime::EnsureStarted() {
         Rescan();
         std::thread([this] { WatchThread(); }).detach();
         std::thread([this] { DumpThread(); }).detach();
-        Log(false, "ReResorep proxy " RERESOREP_VERSION_STRING " started; %zu modded textures indexed", index()->size());
+        Log(false, "ReResorep proxy " RERESOREP_VERSION_STRING " started%s; %zu modded textures indexed",
+            config()->lowImpact ? " in low impact mode" : "", index()->size());
     });
 }
 
@@ -93,10 +112,13 @@ void Runtime::LoadConfig() {
     IniFile ini;
     ini.Load(ModuleDirectory() / kDllSettingsFile);
 
+    const auto previous = config();
     auto cfg = std::make_shared<Config>();
     cfg->originalFolder = ResolveFolder(ini.GetOr(keys::kOriginalFolder, ""), L"original");
     cfg->moddedFolder = ResolveFolder(ini.GetOr(keys::kModdedFolder, ""), L"modded");
-    cfg->dumpTextures = ini.GetBool(keys::kModCreatorMode, false) && ini.GetBool(keys::kSaveTextures, false);
+    cfg->lowImpact = ini.GetBool(keys::kLowImpact, false);
+    cfg->dumpTextures =
+        !cfg->lowImpact && ini.GetBool(keys::kModCreatorMode, false) && ini.GetBool(keys::kSaveTextures, false);
     cfg->logEnabled = ini.GetBool(keys::kLogEnabled, false);
     cfg->logDebug = ini.GetOr(keys::kLogLevel, "") == "debug";
     cfg->logFile = ResolveFolder(ini.GetOr(keys::kLogFile, ""), L"dll.log");
@@ -110,22 +132,30 @@ void Runtime::LoadConfig() {
     if (cfg->logEnabled) logFile_ = _wfsopen(cfg->logFile.c_str(), L"a", _SH_DENYWR);
     LeaveCriticalSection(&logLock_);
 
+    // A different dump folder starts over; dumping turned on reads what that folder already has.
+    const bool newFolder = previous && previous->originalFolder != cfg->originalFolder;
+    const bool readDisk = cfg->dumpTextures && (!previous || !previous->dumpTextures || newFolder);
     config_.store(std::move(cfg), std::memory_order_release);
-    SyncDumpsWithDisk();
+    if (newFolder) {
+        std::lock_guard lock(dump_->mutex);
+        dump_->seen = dump_->inFlight;
+        dump_->redumping = false;
+    }
+    if (readDisk) AddDumpsOnDisk();
 }
 
-void Runtime::SyncDumpsWithDisk() {
-    // What is on disk is not dumped again; a dump that was deleted is, the next time the game
-    // creates that texture (the original Resorep got the same by listing the folder on every
-    // texture creation).
+void Runtime::AddDumpsOnDisk() {
+    // Read once, not on every change: a dump deleted while the game runs stays deleted until
+    // the next redump request (the original Resorep listed the folder on every texture creation).
     const auto cfg = config();
-    if (!cfg->dumpTextures) return;
     TextureIndex onDisk;
-    onDisk.Scan(cfg->originalFolder);
+    {
+        BackgroundScan bg;
+        onDisk.Scan(cfg->originalFolder);
+    }
     std::lock_guard lock(dump_->mutex);
-    dump_->seen = dump_->inFlight;
-    for (const auto& [hash, path] : onDisk.files())
-        if (!dump_->redumping || dump_->redumped.count(hash)) dump_->seen.insert(hash);
+    if (dump_->redumping) return;  // those files are to be written again
+    for (const auto& [hash, path] : onDisk.files()) dump_->seen.insert(hash);
 }
 
 void Runtime::StartRedump() {
@@ -135,7 +165,6 @@ void Runtime::StartRedump() {
     }
     std::lock_guard lock(dump_->mutex);
     dump_->redumping = true;
-    dump_->redumped.clear();
     dump_->seen = dump_->inFlight;
     Log(false, "Redump requested; textures are dumped again as the game loads them");
 }
@@ -143,73 +172,73 @@ void Runtime::StartRedump() {
 void Runtime::Rescan() {
     auto idx = std::make_shared<TextureIndex>();
     const auto cfg = config();
-    idx->Scan(cfg->moddedFolder, cfg->gameSha256);
+    {
+        BackgroundScan bg;
+        idx->Scan(cfg->moddedFolder, cfg->gameSha256);
+    }
     index_.store(std::move(idx), std::memory_order_release);
 }
 
 void Runtime::WatchThread() {
-    // Picks up mods added/removed/disabled from the manager, settings changes and deleted
-    // dumps without restarting the game. Textures already created keep their old data.
-    enum Watch { kSettings, kModded, kOriginal };
+    // Picks up mods added/removed/disabled from the manager, settings changes and redump
+    // requests without restarting the game. Textures already created keep their old data.
+    // The dump folder isn't watched: what was dumped stays dumped until a redump request.
+    t_isWatchThread = true;  // its folder scans run at background priority
+    enum Watch { kSettings, kModded };
     for (;;) {
         const fs::path modded = config()->moddedFolder;
-        const fs::path original = config()->originalFolder;
-        HANDLE handles[3] = {
+        const bool watchModded = !config()->lowImpact;
+        HANDLE handles[2] = {
             FindFirstChangeNotificationW(ModuleDirectory().c_str(), FALSE,
                                          FILE_NOTIFY_CHANGE_LAST_WRITE | FILE_NOTIFY_CHANGE_FILE_NAME),
             // Whole tree: mod/category folders, and reresorep_disabled.ini when categories are toggled.
-            FindFirstChangeNotificationW(modded.c_str(), TRUE,
-                                         FILE_NOTIFY_CHANGE_LAST_WRITE | FILE_NOTIFY_CHANGE_FILE_NAME |
-                                             FILE_NOTIFY_CHANGE_DIR_NAME),
-            // Dumps added or deleted (by the manager's "Delete all dumps", or by hand).
-            FindFirstChangeNotificationW(original.c_str(), FALSE, FILE_NOTIFY_CHANGE_FILE_NAME),
+            watchModded ? FindFirstChangeNotificationW(modded.c_str(), TRUE,
+                                                       FILE_NOTIFY_CHANGE_LAST_WRITE | FILE_NOTIFY_CHANGE_FILE_NAME |
+                                                           FILE_NOTIFY_CHANGE_DIR_NAME)
+                        : INVALID_HANDLE_VALUE,
         };
         if (handles[kSettings] == INVALID_HANDLE_VALUE) return;
-        HANDLE waits[3];
-        Watch kinds[3];
-        DWORD count = 0;
-        for (int w = 0; w < 3; ++w) {
-            if (handles[w] == INVALID_HANDLE_VALUE) continue;
-            waits[count] = handles[w];
-            kinds[count++] = Watch(w);
-        }
+        const DWORD count = handles[kModded] == INVALID_HANDLE_VALUE ? 1 : 2;
+        const bool pollModded = watchModded && count < 2;
 
         bool restart = false;
         while (!restart) {
-            // A folder that doesn't exist yet is polled every 2 s until it appears.
-            const DWORD r = WaitForMultipleObjects(count, waits, FALSE, count < 3 ? 2000 : INFINITE);
+            // A modded folder that doesn't exist yet is polled every 2 s until it appears.
+            const DWORD r = WaitForMultipleObjects(count, handles, FALSE, pollModded ? 2000 : INFINITE);
             if (r == WAIT_TIMEOUT) {
                 std::error_code ec;  // no exceptions in the game's process
-                restart = (handles[kModded] == INVALID_HANDLE_VALUE && fs::exists(modded, ec)) ||
-                          (handles[kOriginal] == INVALID_HANDLE_VALUE && fs::exists(original, ec));
-                if (restart) {
-                    Rescan();
-                    SyncDumpsWithDisk();
-                }
+                restart = fs::exists(modded, ec);
+                if (restart) Rescan();
                 continue;
             }
-            const DWORD which = r - WAIT_OBJECT_0;
-            if (which >= count) return;
+            if (r - WAIT_OBJECT_0 >= count) return;
             Sleep(250);  // let a burst of file operations finish
-            FindNextChangeNotification(waits[which]);
-            if (kinds[which] == kSettings) {
+            // Serve every folder that changed, not just the first: the game folder changes all
+            // the time while dll.log is written, and must not starve the modded folder.
+            bool changed[2] = {};
+            for (DWORD w = 0; w < count; ++w) {
+                if (WaitForSingleObject(handles[w], 0) != WAIT_OBJECT_0) continue;
+                changed[w] = true;
+                FindNextChangeNotification(handles[w]);
+            }
+            if (changed[kSettings]) {
                 // The game folder changes for many reasons (our own dll.log included);
                 // only a redump request or a new dllsettings.ini matters.
                 std::error_code ec;
                 if (fs::remove(ModuleDirectory() / kRedumpRequestFile, ec)) StartRedump();
                 const auto stamp = fs::last_write_time(ModuleDirectory() / kDllSettingsFile, ec);
-                if (ec || stamp == settingsStamp_) continue;
-                settingsStamp_ = stamp;
-                LoadConfig();
-                Rescan();
-                restart = config()->moddedFolder != modded || config()->originalFolder != original;
-                Log(false, "Settings reloaded");
-            } else if (kinds[which] == kModded) {
+                if (!ec && stamp != settingsStamp_) {
+                    settingsStamp_ = stamp;
+                    LoadConfig();
+                    Rescan();
+                    changed[kModded] = false;  // just rescanned
+                    restart = config()->moddedFolder != modded || config()->lowImpact != !watchModded;
+                    Log(false, "Settings reloaded");
+                }
+            }
+            if (changed[kModded]) {
                 Rescan();
                 Log(true, "Modded folder changed; %zu textures indexed", index()->size());
-            } else {
-                SyncDumpsWithDisk();
-                Log(true, "Dump folder changed; deleted dumps will be dumped again");
             }
         }
         for (HANDLE h : handles)
@@ -272,13 +301,19 @@ void Runtime::DumpThread() {
         const fs::path target = folder / (std::to_wstring(job.hash) + L".dds");
         std::ofstream out(target, std::ios::binary | std::ios::trunc);
         if (out) out.write(reinterpret_cast<const char*>(file.data()), std::streamsize(file.size()));
-        if (!out) Log(false, "Failed to save texture to file: %ls", target.c_str());
-        else Log(true, "Saved original texture %u (%ux%u, %s)", job.hash, job.width, job.height, FormatName(job.format));
+        out.close();
+        if (out.fail()) {
+            // No half-written file in the dump folder. Not retried until a redump request, so an
+            // unwritable folder can't make every texture load copy and fail again.
+            fs::remove(target, ec);
+            Log(false, "Failed to save texture to file: %ls", target.c_str());
+        } else {
+            Log(true, "Saved original texture %u (%ux%u, %s)", job.hash, job.width, job.height, FormatName(job.format));
+        }
 
         std::lock_guard lock(dump_->mutex);
         dump_->pendingBytes -= job.bytes;
         dump_->inFlight.erase(job.hash);
-        if (dump_->redumping && out) dump_->redumped.insert(job.hash);
     }
 }
 
