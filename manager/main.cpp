@@ -28,6 +28,8 @@ ComPtr<IDXGISwapChain> g_swapChain;
 ComPtr<ID3D11RenderTargetView> g_rtv;
 UINT g_resizeWidth = 0, g_resizeHeight = 0;
 resorep::ui::App* g_app = nullptr;
+bool g_sizing = false;   // the user is dragging the window's edge (Windows' own modal loop runs)
+bool g_inFrame = false;  // RenderFrame is running; a dialog it opens can send WM_SIZE
 
 bool CreateDevice(HWND hwnd) {
     DXGI_SWAP_CHAIN_DESC sd{};
@@ -86,16 +88,50 @@ void SetWindowIcons(HWND hwnd) {
     smallIcon = newSmall;
 }
 
+// Resizes the swap chain if the window changed size, then draws and shows one frame.
+void RenderFrame() {
+    if (!g_app || g_inFrame) return;
+    g_inFrame = true;
+    if (g_resizeWidth && g_resizeHeight) {
+        g_rtv.Reset();
+        g_swapChain->ResizeBuffers(0, g_resizeWidth, g_resizeHeight, DXGI_FORMAT_UNKNOWN, 0);
+        g_resizeWidth = g_resizeHeight = 0;
+        CreateRenderTarget();
+    }
+
+    ImGui_ImplDX11_NewFrame();
+    ImGui_ImplWin32_NewFrame();
+    ImGui::NewFrame();
+    g_app->Frame();
+    ImGui::Render();
+
+    const float clear[4] = {0.09f, 0.09f, 0.10f, 1.0f};
+    g_context->OMSetRenderTargets(1, g_rtv.GetAddressOf(), nullptr);
+    g_context->ClearRenderTargetView(g_rtv.Get(), clear);
+    ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+    g_swapChain->Present(1, 0);  // vsync keeps the idle UI cheap
+    g_inFrame = false;
+}
+
 LRESULT WINAPI WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     if (ImGui_ImplWin32_WndProcHandler(hwnd, msg, wParam, lParam)) return true;
     switch (msg) {
         case WM_DPICHANGED:
             SetWindowIcons(hwnd);
             break;
+        case WM_ENTERSIZEMOVE:
+            g_sizing = true;
+            return 0;
+        case WM_EXITSIZEMOVE:
+            g_sizing = false;
+            return 0;
         case WM_SIZE:
             if (wParam != SIZE_MINIMIZED) {
                 g_resizeWidth = LOWORD(lParam);
                 g_resizeHeight = HIWORD(lParam);
+                // While the edge is dragged the main loop is stuck in Windows' sizing loop, and the
+                // last frame would just be stretched until the mouse is released.
+                if (g_sizing) RenderFrame();
             }
             return 0;
         case WM_GETMINMAXINFO:
@@ -201,25 +237,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
                 if (msg.message == WM_QUIT) running = false;
             }
             if (!running) break;
-
-            if (g_resizeWidth && g_resizeHeight) {
-                g_rtv.Reset();
-                g_swapChain->ResizeBuffers(0, g_resizeWidth, g_resizeHeight, DXGI_FORMAT_UNKNOWN, 0);
-                g_resizeWidth = g_resizeHeight = 0;
-                CreateRenderTarget();
-            }
-
-            ImGui_ImplDX11_NewFrame();
-            ImGui_ImplWin32_NewFrame();
-            ImGui::NewFrame();
-            app->Frame();
-            ImGui::Render();
-
-            const float clear[4] = {0.09f, 0.09f, 0.10f, 1.0f};
-            g_context->OMSetRenderTargets(1, g_rtv.GetAddressOf(), nullptr);
-            g_context->ClearRenderTargetView(g_rtv.Get(), clear);
-            ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
-            g_swapChain->Present(1, 0);  // vsync keeps the idle UI cheap
+            RenderFrame();
         }
         g_app = nullptr;
     }
