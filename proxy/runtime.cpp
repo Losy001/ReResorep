@@ -110,7 +110,7 @@ void Runtime::EnsureStarted() {
         Rescan();
         std::thread([this] { WatchThread(); }).detach();
         std::thread([this] { DumpThread(); }).detach();
-        Log(false, "ReResorep proxy " RERESOREP_VERSION_STRING " started%s; %zu modded textures indexed",
+        Log(false, "ReResorep proxy " RERESOREP_PROXY_VERSION_STRING " started%s; %zu modded textures indexed",
             config()->lowImpact ? " in low impact mode" : "", index()->size());
     });
 }

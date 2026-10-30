@@ -4,4 +4,5 @@
 #define RR_ORIGINAL_FILENAME "d3d11.dll"
 #define RR_INTERNAL_NAME     "ReResorep proxy"
 #define RR_FILE_TYPE         VFT_DLL
+#define RR_PROXY
 #include "version_info.rc.inc"

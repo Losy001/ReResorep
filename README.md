@@ -236,13 +236,18 @@ release. Packaging a Debug build is refused.
 ## Version and credits
 
 The version is set once, in `CMakeLists.txt` (`project(... VERSION 2.5.1)`). From there it goes
-into:
+into the window title, the **About** tab and the version info of `ReResorep.exe`.
 
-- the window title,
-- the **About** tab,
-- the version info of both `ReResorep.exe` and the proxy `d3d11.dll` (Explorer → Properties →
-  Details),
-- the proxy's `dll.log`.
+The proxy has its own version, `RERESOREP_PROXY_VERSION` in `CMakeLists.txt`. It goes into the
+proxy's version info (Explorer → Properties → Details) and its `dll.log`. Raise it only when the
+proxy changes (`proxy/`, or the `core/` code it links): some mods whitelist `d3d11.dll` by its hash,
+so every new proxy file means they have to update.
+
+Releases that only change the manager therefore ship the same proxy file. Builds are reproducible
+(`/Brepro`), and `packaging/proxy.sha256` holds the version and SHA-256 of the released proxy.
+While the proxy version matches it, the `ship` target packages exactly that file, taking it from an
+earlier package in `build/ship` if this build's differs. When the proxy version is raised, `ship`
+prints the new hash; once that release is out, put it in `packaging/proxy.sha256`.
 
 The **Games** tab shows which proxy version each game has installed.
 

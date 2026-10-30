@@ -2279,7 +2279,7 @@ void App::DrawGames() {
         if (!g.proxyVersion.empty()) {
             part(kDimColor, ("proxy " + g.proxyVersion).c_str());
             if (g.status == ProxyStatus::Outdated)
-                ImGui::SetItemTooltip("This ReResorep has proxy %s. Click Update to install it.", RERESOREP_VERSION_STRING);
+                ImGui::SetItemTooltip("This ReResorep has proxy %s. Click Update to install it.", RERESOREP_PROXY_VERSION_STRING);
         }
         if (g.status == ProxyStatus::Modified)
             ImGui::SetItemTooltip("The d3d11.dll in the game folder was damaged or changed after it was built, so it\n"

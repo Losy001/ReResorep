@@ -18,6 +18,19 @@ set(RERESOREP_BIN ${CMAKE_BINARY_DIR}/bin)
 set(RERESOREP_UNSEALED ${CMAKE_BINARY_DIR}/unsealed)
 
 # Single source of the version: project(... VERSION x.y.z) above.
+# The proxy has its own version. Bump it only when the proxy itself changes (proxy/ or the core/
+# code it links): mods that whitelist d3d11.dll by its hash need the new hash every time it does.
+# A release that only changes the manager keeps it, and ships the released proxy file
+# (packaging/proxy.sha256).
+set(RERESOREP_PROXY_VERSION 2.5.0)
+string(REPLACE "." ";" RERESOREP_PROXY_VERSION_PARTS ${RERESOREP_PROXY_VERSION})
+list(GET RERESOREP_PROXY_VERSION_PARTS 0 RERESOREP_PROXY_VERSION_MAJOR)
+list(GET RERESOREP_PROXY_VERSION_PARTS 1 RERESOREP_PROXY_VERSION_MINOR)
+list(GET RERESOREP_PROXY_VERSION_PARTS 2 RERESOREP_PROXY_VERSION_PATCH)
+# Reproducible builds: the same sources always link to the same bytes (no timestamps), so a
+# rebuild of an unchanged proxy keeps its hash.
+add_compile_options($<$<COMPILE_LANGUAGE:CXX>:/Brepro>)
+add_link_options(/Brepro)
 set(RERESOREP_GENERATED ${CMAKE_BINARY_DIR}/generated)
 configure_file(core/version.h.in ${RERESOREP_GENERATED}/version.h @ONLY)
 
@@ -65,7 +78,8 @@ add_custom_target(testing ALL
 # Release folder + zip in build/ship: cmake --build build --config Release --target ship
 add_custom_target(ship
     COMMAND ${CMAKE_COMMAND} -DBIN=${RERESOREP_BIN} -DSRC=${PROJECT_SOURCE_DIR} -DOUT=${CMAKE_BINARY_DIR}/ship
-            -DVERSION=${PROJECT_VERSION} -DCONFIG=$<CONFIG> -P ${PROJECT_SOURCE_DIR}/packaging/ship.cmake
+            -DVERSION=${PROJECT_VERSION} -DPROXY_VERSION=${RERESOREP_PROXY_VERSION} -DCONFIG=$<CONFIG>
+            -P ${PROJECT_SOURCE_DIR}/packaging/ship.cmake
     DEPENDS ReResorep proxy
     COMMENT "Packaging ReResorep ${PROJECT_VERSION}"
     VERBATIM)
