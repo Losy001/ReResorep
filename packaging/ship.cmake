@@ -21,6 +21,7 @@ set(ZIP "${OUT}/${NAME}-win64.zip")
 set(PROXY "${BIN}/proxy/d3d11.dll")
 file(SHA256 "${PROXY}" BUILT_PROXY_HASH)
 file(STRINGS "${SRC}/packaging/proxy.sha256" PIN LIMIT_COUNT 1)
+string(STRIP "${PIN}" PIN)  # a CRLF checkout leaves a \r
 string(REGEX MATCH "^([0-9.]+) ([0-9a-f]+)$" PIN_OK "${PIN}")
 if(NOT PIN_OK)
     message(FATAL_ERROR "packaging/proxy.sha256 should hold \"<proxy version> <sha256>\"")
