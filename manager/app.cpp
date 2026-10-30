@@ -2,6 +2,7 @@
 
 #include <imgui.h>
 #include <imgui_impl_dx11.h>
+#include <imgui_internal.h>  // GImGui->NavActivateId: Shift+click types into the size slider
 
 #include <algorithm>
 #include <cmath>
@@ -1330,7 +1331,8 @@ void App::DrawDeleteDumpsPopup() {
 }
 
 void App::SortVisible(std::vector<const TextureFile*>& files, bool isMod) const {
-    const std::string& key = settings_.sortKey;
+    const SortOrder& order = settings_.SortFor(isMod);
+    const std::string& key = order.key;
     // Returns <0, 0, >0 like strcmp, before applying the direction.
     auto compare = [&](const TextureFile& a, const TextureFile& b) -> int {
         auto cmp = [](auto x, auto y) { return x < y ? -1 : (y < x ? 1 : 0); };
@@ -1348,7 +1350,7 @@ void App::SortVisible(std::vector<const TextureFile*>& files, bool isMod) const 
         if (key == "category" && isMod) return cmp(DisabledSet::Key(a.relDir), DisabledSet::Key(b.relDir));
         return 0;  // "hash": the tie-break below
     };
-    const bool desc = settings_.sortDescending;
+    const bool desc = order.descending;
     std::stable_sort(files.begin(), files.end(), [&](const TextureFile* a, const TextureFile* b) {
         int c = compare(*a, *b);
         if (!c) c = a->hash < b->hash ? -1 : (a->hash > b->hash ? 1 : 0);
@@ -1383,9 +1385,10 @@ void App::DrawPreview(ImDrawList* dl, ID3D11ShaderResourceView* srv, uint32_t w,
 
 void App::DrawViewOptions(bool isMod) {
     // Second toolbar row: how the grid is ordered and how previews are oriented.
+    SortOrder& order = settings_.SortFor(isMod);
     const SortOption* current = &kSortOptions[0];
     for (const SortOption& o : kSortOptions)
-        if (settings_.sortKey == o.key && (isMod || !o.modsOnly)) current = &o;
+        if (order.key == o.key && (isMod || !o.modsOnly)) current = &o;
     bool changed = false;
 
     ImGui::AlignTextToFramePadding();
@@ -1396,19 +1399,19 @@ void App::DrawViewOptions(bool isMod) {
         for (const SortOption& o : kSortOptions) {
             if (o.modsOnly && !isMod) continue;
             if (ImGui::Selectable(o.label, &o == current)) {
-                settings_.sortKey = o.key;
+                order.key = o.key;
                 changed = true;
             }
         }
         ImGui::EndCombo();
     }
     ImGui::SameLine(0, 4);
-    if (ImGui::ArrowButton("##dir", settings_.sortDescending ? ImGuiDir_Down : ImGuiDir_Up)) {
-        settings_.sortDescending = !settings_.sortDescending;
+    if (ImGui::ArrowButton("##dir", order.descending ? ImGuiDir_Down : ImGuiDir_Up)) {
+        order.descending = !order.descending;
         changed = true;
     }
-    ImGui::SetItemTooltip(settings_.sortDescending ? "Descending (largest / newest first)"
-                                                   : "Ascending (smallest / oldest first)");
+    ImGui::SetItemTooltip(order.descending ? "Descending (largest / newest first)"
+                                           : "Ascending (smallest / oldest first)");
 
     ImGui::SameLine(0, 20);
     ImGui::AlignTextToFramePadding();
@@ -1427,44 +1430,62 @@ void App::DrawViewOptions(bool isMod) {
     ImGui::SetItemTooltip("Flips previews left-to-right (after rotating).");
 
     ImGui::SameLine(0, 20);
-    changed |= ImGui::Checkbox("Hide normal maps", &settings_.hideNormals);
+    TextureFilters& flt = settings_.FiltersFor(isMod);
+    changed |= ImGui::Checkbox("Hide normal maps", &flt.hideNormals);
     ImGui::SameLine();
-    changed |= ImGui::Checkbox("Hide depth / grayscale", &settings_.hideGrayscale);
+    changed |= ImGui::Checkbox("Hide depth / grayscale", &flt.hideGrayscale);
     ImGui::SetItemTooltip("Single-channel textures (BC4 and similar): depth/height, roughness, masks.\n"
                           "Grey-looking colour textures (concrete, metal, logos) are not hidden.\n"
                           "Texture types are detected automatically in the background.");
     ImGui::SameLine();
-    changed |= ImGui::Checkbox("Hide packed / masks", &settings_.hidePacked);
+    changed |= ImGui::Checkbox("Hide packed / masks", &flt.hidePacked);
     ImGui::SetItemTooltip("Data textures that are not pictures:\n"
                           "- the blue/cyan/teal ones: grayscale maps (roughness, AO...) packed into one texture's channels\n"
                           "- flat red/green/blue material ID masks\n"
                           "Texture types are detected automatically in the background.");
     ImGui::SameLine();
-    changed |= ImGui::Checkbox("Black Ice only", &settings_.onlyBlackIce);
+    changed |= ImGui::Checkbox("Black Ice only", &flt.onlyBlackIce);
     ImGui::SetItemTooltip("Only textures of the Black Ice weapon skin: icy cyan with white highlights and dark\n"
                           "cracks, on weapon-sized texture sheets. Detected by colour, so a few may be missed\n"
                           "or slip in.");
 
     ImGui::SameLine(0, 20);
     ImGui::SetNextItemWidth(120);
-    ImGui::SliderFloat("##size", &thumbSize_, 64.0f, 256.0f, "Size %.0f");
+    // Ctrl+click (Dear ImGui's own) or Shift+click (Settings) turns the slider into a box to type a size in.
+    ImGuiSliderFlags sizeFlags = ImGuiSliderFlags_AlwaysClamp;
+    if (settings_.shiftClickToType) {
+        const ImGuiID id = ImGui::GetID("##size");
+        const ImGuiIO& io = ImGui::GetIO();
+        const ImVec2 min = ImGui::GetCursorScreenPos();
+        if (io.KeyShift && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && ImGui::IsWindowHovered() &&
+            ImGui::IsMouseHoveringRect(min, ImVec2(min.x + 120, min.y + ImGui::GetFrameHeight()))) {
+            GImGui->NavActivateId = id;
+            GImGui->NavActivateFlags = ImGuiActivateFlags_PreferInput;
+        } else if (io.KeyCtrl && !ImGui::TempInputIsActive(id)) {
+            sizeFlags |= ImGuiSliderFlags_NoInput;  // Ctrl+click just drags; Ctrl+A etc. still work once typing
+        }
+    }
+    ImGui::SliderFloat("##size", &thumbSize_, 64.0f, 256.0f, "Size %.0f", sizeFlags);
+    ImGui::SetItemTooltip(settings_.shiftClickToType ? "Shift+click to type a size (64-256)."
+                                                     : "Ctrl+click to type a size (64-256).");
     if (changed) settings_.Save();
 }
 
 void App::DrawGrid(const std::vector<TextureFile>& files, bool isMod) {
+    const TextureFilters& flt = settings_.FiltersFor(isMod);
     std::vector<const TextureFile*> visible;
     visible.reserve(files.size());
     for (const auto& f : files) {
         if (isMod && !showDisabled_ && !f.enabled) continue;
         if (isMod && !InView(f)) continue;
         if (!isMod && hideModdedDumps_ && library_.IsModded(f.hash)) continue;
-        if (settings_.hideNormals || settings_.hideGrayscale || settings_.hidePacked) {
+        if (flt.hideNormals || flt.hideGrayscale || flt.hidePacked) {
             const TextureKind kind = KindOf(f);
-            if (settings_.hideNormals && kind == TextureKind::Normal) continue;
-            if (settings_.hideGrayscale && kind == TextureKind::Grayscale) continue;
-            if (settings_.hidePacked && kind == TextureKind::Packed) continue;
+            if (flt.hideNormals && kind == TextureKind::Normal) continue;
+            if (flt.hideGrayscale && kind == TextureKind::Grayscale) continue;
+            if (flt.hidePacked && kind == TextureKind::Packed) continue;
         }
-        if (settings_.onlyBlackIce && !IsBlackIce(f)) continue;
+        if (flt.onlyBlackIce && !IsBlackIce(f)) continue;
         if (MatchesFilter(f)) visible.push_back(&f);
     }
     SortVisible(visible, isMod);
@@ -1504,7 +1525,7 @@ void App::DrawGrid(const std::vector<TextureFile>& files, bool isMod) {
             ImGui::TextColored(kDimColor, "Only the part selected on the left is searched; pick All textures to search every mod.");
         return;
     }
-    if (visible.empty() && settings_.onlyBlackIce && !files.empty()) {
+    if (visible.empty() && flt.onlyBlackIce && !files.empty()) {
         ImGui::TextColored(kDimColor, analyzer_->Pending() ? "No Black Ice textures found yet; still analysing textures..."
                                                            : "No Black Ice textures here. Untick \"Black Ice only\" to see all.");
         return;
@@ -1539,6 +1560,24 @@ void App::DrawGrid(const std::vector<TextureFile>& files, bool isMod) {
     const int perRow = std::max(1, int((ImGui::GetContentRegionAvail().x + style.ItemSpacing.x) / cell));
     const int rows = int((visible.size() + perRow - 1) / perRow);
     const float rowHeight = thumbSize_ + ImGui::GetTextLineHeight() * 2 + style.ItemSpacing.y * 2;
+
+    // Resizing the cards (or the panel) changes the rows, so the same scroll offset would show
+    // other textures. Keep the texture at the top of the view there instead.
+    {
+        ImGuiStorage* storage = ImGui::GetStateStorage();
+        const ImGuiID kPerRow = ImGui::GetID("##gridPerRow"), kRowHeight = ImGui::GetID("##gridRowHeight");
+        const int oldPerRow = storage->GetInt(kPerRow, 0);
+        const float oldRowHeight = storage->GetFloat(kRowHeight, 0.0f);
+        if (oldPerRow > 0 && oldRowHeight > 0.0f && (oldPerRow != perRow || oldRowHeight != rowHeight)) {
+            const float top = ImGui::GetCursorPosY();
+            const float rowPos = std::max(0.0f, (ImGui::GetScrollY() - top) / oldRowHeight);
+            const int first = int(rowPos) * oldPerRow;  // first texture of the top row
+            const float into = rowPos - float(int(rowPos));
+            if (rowPos > 0.0f) ImGui::SetScrollY(top + (float(first / perRow) + into) * rowHeight);
+        }
+        storage->SetInt(kPerRow, perRow);
+        storage->SetFloat(kRowHeight, rowHeight);
+    }
 
     ImGuiMultiSelectIO* ms = ImGui::BeginMultiSelect(ImGuiMultiSelectFlags_ClearOnEscape |
                                                          ImGuiMultiSelectFlags_ClearOnClickVoid |
@@ -1630,9 +1669,10 @@ void App::DrawCard(const TextureFile& file, bool isMod, float size) {
     if (userLabel) dl->AddText(ImVec2(pos.x + 2, pos.y + size + 2), ImGui::GetColorU32(AccentTextColor()), userLabel->c_str());
     else dl->AddText(ImVec2(pos.x + 2, pos.y + size + 2), IM_COL32(230, 230, 230, 255), line);
     const ImVec2 line2(pos.x + 2, pos.y + size + 2 + textH);
-    if (settings_.sortKey == "date") {
+    const std::string& sortKey = settings_.SortFor(isMod).key;
+    if (sortKey == "date") {
         dl->AddText(line2, IM_COL32(150, 150, 160, 255), FormatDate(file.modified).c_str());
-    } else if (settings_.sortKey == "filesize") {
+    } else if (sortKey == "filesize") {
         dl->AddText(line2, IM_COL32(150, 150, 160, 255), FormatBytes(file.size).c_str());
     } else if (userLabel) {
         dl->AddText(line2, IM_COL32(150, 150, 160, 255), line);
@@ -2477,6 +2517,29 @@ void App::DrawSettings() {
     }
     HelpMarker("How the details preview looks past 100% zoom. Sharp shows every texel as a hard-edged "
                "square, which is easiest for checking pixel-level edits. Smooth blends neighbouring texels.");
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("Type a thumbnail size with");
+    ImGui::SameLine();
+    bool clickChanged = ImGui::RadioButton("Ctrl+click", !settings_.shiftClickToType) && settings_.shiftClickToType;
+    ImGui::SameLine();
+    clickChanged |= ImGui::RadioButton("Shift+click", settings_.shiftClickToType) && !settings_.shiftClickToType;
+    if (clickChanged) {
+        settings_.shiftClickToType = !settings_.shiftClickToType;
+        settings_.Save();
+    }
+    HelpMarker("Clicking the Size slider with this key held opens a box to type an exact size in.");
+    if (ImGui::Checkbox("Separate sorting for Mods and Dumps", &settings_.separateSort)) {
+        if (settings_.separateSort) settings_.dumpSort = settings_.sort;  // Dumps start from what is set now
+        settings_.Save();
+    }
+    HelpMarker("Sort by and its direction are set separately on the Mods and Dumps tabs. "
+               "Off: both tabs are sorted the same way.");
+    if (ImGui::Checkbox("Separate filters for Mods and Dumps", &settings_.separateFilters)) {
+        if (settings_.separateFilters) settings_.dumpFilters = settings_.filters;  // Dumps start from what is set now
+        settings_.Save();
+    }
+    HelpMarker("The Hide normal maps / depth / packed and Black Ice only boxes are set separately on the "
+               "Mods and Dumps tabs. Off: one set of filters for both. The search box is always shared.");
 
     ImGui::SeparatorText("Labels");
     ImGui::Text("%zu label(s) in %s", labels_.size(), ToUtf8(LabelsFile()).c_str());

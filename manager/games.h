@@ -21,6 +21,20 @@ struct ExeHash {
     std::string previous;
 };
 
+// How the Mods/Dumps grids are ordered.
+struct SortOrder {
+    std::string key = "hash";
+    bool descending = false;
+};
+
+// Which textures the Mods/Dumps grids hide.
+struct TextureFilters {
+    bool hideNormals = false;
+    bool hideGrayscale = false;
+    bool hidePacked = false;
+    bool onlyBlackIce = false;
+};
+
 // Everything the manager persists (reresorep.ini next to the exe).
 struct ManagerSettings {
     // The Default profile: the shared folders every game uses unless it has its own.
@@ -32,16 +46,17 @@ struct ManagerSettings {
     bool logEnabled = false;
     bool logDebug = false;
     // Texture manager view options.
-    std::string sortKey = "hash";
-    bool sortDescending = false;
+    SortOrder sort;      // both tabs, or only Mods when separateSort
+    SortOrder dumpSort;  // the Dumps tab when separateSort
+    bool separateSort = false;
     int previewRotation = 180;  // degrees clockwise: 0, 90, 180, 270
     bool previewMirror = false;
     bool sharpZoom = true;  // zoomed-in preview shows hard-edged texels instead of blending them
+    bool shiftClickToType = false;  // Shift+click instead of Ctrl+click types a value into the Size slider
     uint32_t accentColor = 0x4296FA;  // 0xRRGGBB
-    bool hideNormals = false;
-    bool hideGrayscale = false;
-    bool hidePacked = false;
-    bool onlyBlackIce = false;
+    TextureFilters filters;      // both tabs, or only Mods when separateFilters
+    TextureFilters dumpFilters;  // the Dumps tab when separateFilters
+    bool separateFilters = false;
     std::vector<std::filesystem::path> games;  // game executables
     std::map<std::wstring, ExeHash> exeHashes;  // by GameKey
     // GameKey -> folder name under games\: the exe's hash (16 hex digits) when Own folders was
@@ -51,6 +66,11 @@ struct ManagerSettings {
 
     // Whether installed proxies dump textures.
     bool Dumping() const { return modCreatorMode && saveTextures && !lowImpact; }
+    // The order and filters the Mods (isMod) or Dumps tab uses.
+    SortOrder& SortFor(bool isMod) { return separateSort && !isMod ? dumpSort : sort; }
+    const SortOrder& SortFor(bool isMod) const { return separateSort && !isMod ? dumpSort : sort; }
+    TextureFilters& FiltersFor(bool isMod) { return separateFilters && !isMod ? dumpFilters : filters; }
+    const TextureFilters& FiltersFor(bool isMod) const { return separateFilters && !isMod ? dumpFilters : filters; }
 
     static std::filesystem::path File();
     void Load();

@@ -59,16 +59,25 @@ void ManagerSettings::Load() {
     lowImpact = ini.GetBool(keys::kLowImpact, false);
     logEnabled = ini.GetBool(keys::kLogEnabled, false);
     logDebug = ini.GetOr(keys::kLogLevel, "") == "debug";
-    sortKey = ini.GetOr("ui_sort", "hash");
-    sortDescending = ini.GetBool("ui_sort_descending", false);
+    sort = {ini.GetOr("ui_sort", "hash"), ini.GetBool("ui_sort_descending", false)};
+    dumpSort = {ini.GetOr("ui_dumps_sort", "hash"), ini.GetBool("ui_dumps_sort_descending", false)};
+    separateSort = ini.GetBool("ui_separate_sort", false);
     previewRotation = ((std::atoi(ini.GetOr("ui_preview_rotation", "180").c_str()) / 90 % 4 + 4) % 4) * 90;
     previewMirror = ini.GetBool("ui_preview_mirror", false);
     sharpZoom = ini.GetBool("ui_sharp_zoom", true);
+    shiftClickToType = ini.GetBool("ui_shift_click_to_type", false);
     accentColor = ParseHexColor(ini.GetOr("ui_accent_color", ""), kDefaultAccent);
-    hideNormals = ini.GetBool("ui_hide_normals", false);
-    hideGrayscale = ini.GetBool("ui_hide_grayscale", false);
-    hidePacked = ini.GetBool("ui_hide_packed", false);
-    onlyBlackIce = ini.GetBool("ui_only_black_ice", false);
+    auto loadFilters = [&](const std::string& prefix) {
+        TextureFilters f;
+        f.hideNormals = ini.GetBool(prefix + "hide_normals", false);
+        f.hideGrayscale = ini.GetBool(prefix + "hide_grayscale", false);
+        f.hidePacked = ini.GetBool(prefix + "hide_packed", false);
+        f.onlyBlackIce = ini.GetBool(prefix + "only_black_ice", false);
+        return f;
+    };
+    filters = loadFilters("ui_");
+    dumpFilters = loadFilters("ui_dumps_");
+    separateFilters = ini.GetBool("ui_separate_filters", false);
     games.clear();
     for (const std::string& g : ini.GetAll("game")) games.emplace_back(Utf8ToWide(g));
     // "<sha256>|<size>|<modified>|<previous sha256>|<exe path>"
@@ -100,16 +109,25 @@ bool ManagerSettings::Save() const {
     ini.SetBool(keys::kLowImpact, lowImpact);
     ini.SetBool(keys::kLogEnabled, logEnabled);
     ini.Set(keys::kLogLevel, logDebug ? "debug" : "info");
-    ini.Set("ui_sort", sortKey);
-    ini.SetBool("ui_sort_descending", sortDescending);
+    ini.Set("ui_sort", sort.key);
+    ini.SetBool("ui_sort_descending", sort.descending);
+    ini.Set("ui_dumps_sort", dumpSort.key);
+    ini.SetBool("ui_dumps_sort_descending", dumpSort.descending);
+    ini.SetBool("ui_separate_sort", separateSort);
     ini.Set("ui_preview_rotation", std::to_string(previewRotation));
     ini.SetBool("ui_preview_mirror", previewMirror);
     ini.SetBool("ui_sharp_zoom", sharpZoom);
+    ini.SetBool("ui_shift_click_to_type", shiftClickToType);
     ini.Set("ui_accent_color", HexColor(accentColor));
-    ini.SetBool("ui_hide_normals", hideNormals);
-    ini.SetBool("ui_hide_grayscale", hideGrayscale);
-    ini.SetBool("ui_hide_packed", hidePacked);
-    ini.SetBool("ui_only_black_ice", onlyBlackIce);
+    auto saveFilters = [&](const std::string& prefix, const TextureFilters& f) {
+        ini.SetBool(prefix + "hide_normals", f.hideNormals);
+        ini.SetBool(prefix + "hide_grayscale", f.hideGrayscale);
+        ini.SetBool(prefix + "hide_packed", f.hidePacked);
+        ini.SetBool(prefix + "only_black_ice", f.onlyBlackIce);
+    };
+    saveFilters("ui_", filters);
+    saveFilters("ui_dumps_", dumpFilters);
+    ini.SetBool("ui_separate_filters", separateFilters);
     std::vector<std::string> list, hashes, own;
     std::map<std::wstring, std::string> paths;  // GameKey -> the path as added
     for (const auto& g : games) {
