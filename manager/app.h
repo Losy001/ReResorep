@@ -23,6 +23,7 @@
 #include "mod_package.h"
 #include "library.h"
 #include "thumbnails.h"
+#include "tint.h"
 #include "win_util.h"
 
 namespace resorep::ui {
@@ -139,6 +140,29 @@ private:
     void ImportFiles(const std::vector<std::filesystem::path>& files, const std::wstring& relDir);
     void ReplaceDump(uint32_t hash);
     void ExportAsPng(const TextureFile& file);  // asks where, then writes the PNG
+    // Tint: a dialog with a live preview, then the mods are rewritten in the background.
+    struct TintDialog {
+        std::vector<TextureFile> files;  // what will be tinted
+        std::vector<TextureFile> maps;   // normal and packed maps among those picked, left out unless asked
+        bool includeMaps = false;
+        size_t unsupported = 0;          // can't be tinted at all (format, encrypted)
+        std::string unsupportedReason;   // the first one's reason
+        TintSettings settings;
+        std::vector<float> previewPixels;  // the first texture, small, as decoded
+        uint32_t previewW = 0, previewH = 0;
+        std::string previewError;
+        Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> before, after;
+        bool previewDirty = true;
+    };
+    struct TintResult {
+        size_t done = 0, failed = 0;
+        std::string error;  // the first failure
+    };
+    void OpenTint(const std::vector<const TextureFile*>& mods);
+    void DrawTintPopup();
+    void StartTint();
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> UploadPreview(const std::vector<float>& rgba, uint32_t w,
+                                                                   uint32_t h);
     void ToggleEnabled(const TextureFile& file);
     void Defer(std::function<void()> action) { deferred_.push_back(std::move(action)); }
     void ApplySettings();
@@ -166,6 +190,7 @@ private:
     void PruneSelection();  // drops what is no longer in the library
 
     HWND hwnd_;
+    Microsoft::WRL::ComPtr<ID3D11Device> device_;
     ThumbnailCache thumbs_;
     Library library_;
     ManagerSettings settings_;
@@ -193,6 +218,12 @@ private:
     bool openExportPopup_ = false;
     bool openImportModPopup_ = false;
     bool openDeleteDumpsPopup_ = false;
+    std::optional<TintDialog> tintDialog_;
+    TintSettings lastTint_;  // the dialog opens with the colour and sliders used last
+    bool openTintPopup_ = false;
+    std::future<TintResult> tintJob_;
+    std::shared_ptr<std::atomic<size_t>> tintProgress_;  // textures finished so far
+    size_t tintTotal_ = 0;
     std::future<size_t> deleteDumpsJob_;  // result: how many dumps could not be deleted
     std::shared_ptr<std::atomic<size_t>> deleteProgress_;  // files processed so far
     // Games tab: running games and the Close button's background job.

@@ -72,6 +72,22 @@ texture and use *Move to* to put it in a different category. Any texture, catego
 be turned off. On/off choices are saved in `modded/reresorep_disabled.ini`, and files are never
 moved, so turning something back on restores it exactly.
 
+#### Tinting
+
+Right-click a mod texture, or one of several selected, and choose **Tint...** to recolor them,
+for example to turn Black Ice red. Pick a colour, and the dialog shows a before/after preview:
+
+- **Recolor** takes the colour's hue and keeps each pixel's own saturation and brightness, so
+  whites, blacks and shading stay. This is the one for Black Ice and other one-colour skins.
+- **Colorize** puts the colour's hue and saturation on every pixel, grey and white parts included.
+- **Multiply** multiplies the texture by the colour, like tinted glass.
+
+Strength, Saturation and Brightness fine-tune the result. Normal maps and packed material maps
+are left out unless you tick the box for them. Each texture keeps its format and mips (BC1, BC2,
+BC3, BC7 and 8-bit RGBA can be tinted; BC7 is re-encoded with a simpler encoder, which can soften
+fine detail a little). Originals go to the Recycle Bin, so a tint can be undone from there.
+Encrypted (resorep1) textures can't be tinted.
+
 #### Sharing mods
 
 Right-click a mod, or a category, and choose **Export…** to save it as a `.zip`. The zip

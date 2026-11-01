@@ -116,7 +116,7 @@ void UseSampler(const ImDrawList*, const ImDrawCmd* cmd) {
 }
 }  // namespace
 
-App::App(HWND hwnd, ID3D11Device* device) : hwnd_(hwnd), thumbs_(device) {
+App::App(HWND hwnd, ID3D11Device* device) : hwnd_(hwnd), device_(device), thumbs_(device) {
     D3D11_SAMPLER_DESC sd = {};
     sd.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT;
     sd.AddressU = sd.AddressV = sd.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
@@ -753,6 +753,7 @@ void App::Frame() {
     DrawPackagePopups();
     DrawDeleteDumpsPopup();
     DrawLabelPopup();
+    DrawTintPopup();
     ImGui::End();
     DrawSimilarWindow();
 
@@ -961,6 +962,221 @@ void App::ExportAsPng(const TextureFile& file) {
     const int turns = settings_.previewRotation / 90 + tweak.quarterTurns;
     const bool mirror = settings_.previewMirror != tweak.mirror;
     Status(ExportPng(file.path, *target, turns, mirror), "Exported " + ToUtf8(target->filename()));
+}
+
+void App::OpenTint(const std::vector<const TextureFile*>& mods) {
+    TintDialog d;
+    d.settings = lastTint_;
+    for (const TextureFile* f : mods) {
+        DdsImage header;
+        bool encrypted = false;
+        const char* why = nullptr;
+        if (!ReadTextureInfo(f->path.wstring(), header, &encrypted)) why = "it could not be read";
+        else if (encrypted) why = "it is encrypted (resorep1)";
+        else if (header.isVolume || header.isCubemap || header.arraySize != 1) why = "it is not a plain 2D texture";
+        else why = TintUnsupported(header.format);
+        if (why) {
+            if (!d.unsupported++) d.unsupportedReason = ToUtf8(f->path.filename()) + ": " + why;
+            continue;
+        }
+        // Tinting these changes lighting or material, not colour: left out unless asked for.
+        const TextureKind kind = KindOf(*f);
+        (kind == TextureKind::Normal || kind == TextureKind::Packed ? d.maps : d.files).push_back(*f);
+    }
+    // The preview shows the first texture, small.
+    const std::vector<TextureFile>& shown = d.files.empty() ? d.maps : d.files;
+    if (!shown.empty()) {
+        DdsImage img;
+        std::vector<std::vector<float>> mips;
+        std::string error;
+        if (!LoadTextureMips(shown[0].path.wstring(), 256, img, nullptr, &error))
+            d.previewError = error.empty() ? "Could not read the texture." : error;
+        else if (std::string e = DecodeMips(img, 1, mips); !e.empty())
+            d.previewError = e;
+        else {
+            d.previewPixels = std::move(mips[0]);
+            d.previewW = img.width;
+            d.previewH = img.height;
+            d.before = UploadPreview(d.previewPixels, d.previewW, d.previewH);
+        }
+    }
+    tintDialog_ = std::move(d);
+    openTintPopup_ = true;
+}
+
+Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> App::UploadPreview(const std::vector<float>& rgba, uint32_t w,
+                                                                    uint32_t h) {
+    std::vector<uint8_t> px(size_t(w) * h * 4);
+    for (size_t i = 0; i < px.size(); ++i)
+        px[i] = (i & 3) == 3 ? 255 : uint8_t(std::lround(std::clamp(rgba[i], 0.0f, 1.0f) * 255));  // shown opaque
+    D3D11_TEXTURE2D_DESC desc{w, h, 1, 1, DXGI_FORMAT_R8G8B8A8_UNORM, {1, 0}, D3D11_USAGE_IMMUTABLE,
+                              D3D11_BIND_SHADER_RESOURCE};
+    const D3D11_SUBRESOURCE_DATA data{px.data(), w * 4, 0};
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> tex;
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> srv;
+    if (SUCCEEDED(device_->CreateTexture2D(&desc, &data, &tex))) device_->CreateShaderResourceView(tex.Get(), nullptr, &srv);
+    return srv;
+}
+
+void App::DrawTintPopup() {
+    if (openTintPopup_) {
+        ImGui::OpenPopup("Tint textures");
+        openTintPopup_ = false;
+    }
+    if (!tintDialog_ || !ImGui::BeginPopupModal("Tint textures", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) return;
+    TintDialog& d = *tintDialog_;
+
+    if (tintJob_.valid() && tintJob_.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+        Defer([this, r = tintJob_.get()] {
+            library_.Refresh();
+            std::string error = r.error;
+            if (r.failed > 1) error = std::to_string(r.failed) + " textures could not be tinted. First: " + error;
+            if (r.failed && r.done) error = "Tinted " + std::to_string(r.done) + ", but " + error;
+            Status(error, "Tinted " + std::to_string(r.done) + (r.done == 1 ? " texture" : " textures") +
+                              ". The originals are in the Recycle Bin.");
+        });
+        ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+        tintDialog_.reset();
+        return;
+    }
+    if (tintJob_.valid()) {
+        const size_t done = tintProgress_ ? tintProgress_->load() : 0;
+        ImGui::Text("Tinting %zu of %zu...", std::min(done + 1, tintTotal_), tintTotal_);
+        ImGui::ProgressBar(tintTotal_ ? float(done) / float(tintTotal_) : 0.0f, ImVec2(440, 0));
+        ImGui::EndPopup();
+        return;
+    }
+    if (!d.previewPixels.empty() && d.previewDirty) {
+        std::vector<float> px = d.previewPixels;
+        TintPixels(d.settings, px.data(), size_t(d.previewW) * d.previewH);
+        d.after = UploadPreview(px, d.previewW, d.previewH);
+        d.previewDirty = false;
+    }
+
+    // Before and after, turned the way the grid shows textures.
+    constexpr float kBox = 216.0f;
+    auto preview = [&](const char* caption, ID3D11ShaderResourceView* srv) {
+        ImGui::BeginGroup();
+        ImGui::TextColored(kDimColor, "%s", caption);
+        const ImVec2 at = ImGui::GetCursorScreenPos();
+        ImGui::Dummy(ImVec2(kBox, kBox));
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        dl->AddRectFilled(at, ImVec2(at.x + kBox, at.y + kBox), IM_COL32(28, 28, 32, 255), 3.0f);
+        if (srv) DrawPreview(dl, srv, d.previewW, d.previewH, at, ImVec2(kBox, kBox), IM_COL32_WHITE);
+        else if (!d.previewError.empty()) {
+            ImGui::SetCursorScreenPos(ImVec2(at.x + 6, at.y + 6));
+            ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + kBox - 12);
+            ImGui::TextColored(kErrorColor, "%s", d.previewError.c_str());
+            ImGui::PopTextWrapPos();
+        }
+        ImGui::EndGroup();
+    };
+    preview("Before", d.before.Get());
+    ImGui::SameLine();
+    preview("After", d.after.Get());
+
+    TintSettings& s = d.settings;
+    bool changed = false;
+    ImGui::SetNextItemWidth(kBox);
+    changed |= ImGui::ColorPicker3("##color", s.color, ImGuiColorEditFlags_NoSidePreview | ImGuiColorEditFlags_DisplayHex);
+    ImGui::SameLine();
+    ImGui::BeginGroup();
+    const float controls = kBox - ImGui::CalcTextSize("Saturation").x - ImGui::GetStyle().ItemInnerSpacing.x;
+    static const char* const kModes[] = {"Recolor", "Colorize", "Multiply"};
+    int mode = int(s.mode);
+    ImGui::SetNextItemWidth(controls);
+    if (ImGui::Combo("Mode", &mode, kModes, IM_ARRAYSIZE(kModes))) {
+        s.mode = TintSettings::Mode(mode);
+        changed = true;
+    }
+    ImGui::SetItemTooltip("Recolor: takes the colour's hue; whites, blacks and shading stay as they are.\n"
+                          "    Best for Black Ice and other one-colour skins.\n"
+                          "Colorize: the colour's hue and saturation on every pixel, keeping only its lightness.\n"
+                          "    Also colours grey and white parts.\n"
+                          "Multiply: the texture times the colour, like tinted glass. Darkens.");
+    auto percent = [&](const char* label, float& value, float max) {
+        float v = value * 100.0f;
+        ImGui::SetNextItemWidth(controls);
+        if (ImGui::SliderFloat(label, &v, 0.0f, max, "%.0f%%", ImGuiSliderFlags_AlwaysClamp)) {
+            value = v / 100.0f;
+            changed = true;
+        }
+    };
+    percent("Strength", s.strength, 100.0f);
+    percent("Saturation", s.saturation, 200.0f);
+    percent("Brightness", s.brightness, 200.0f);
+    if (ImGui::Button("Reset sliders")) {
+        s.strength = s.saturation = s.brightness = 1.0f;
+        changed = true;
+    }
+    ImGui::EndGroup();
+    d.previewDirty |= changed;
+
+    ImGui::Spacing();
+    const size_t count = d.files.size() + (d.includeMaps ? d.maps.size() : 0);
+    ImGui::Text("%zu %s will be tinted.", count, count == 1 ? "texture" : "textures");
+    if (!d.maps.empty()) {
+        ImGui::Checkbox(("Also tint the " + std::to_string(d.maps.size()) + " normal / packed map(s)").c_str(),
+                        &d.includeMaps);
+        ImGui::SetItemTooltip("Those hold lighting and material data, not colour: tinting them usually breaks how "
+                              "the surface looks. Leave this off unless you know you want it.");
+    }
+    if (d.unsupported)
+        ImGui::TextColored(kDimColor, "%zu skipped (%s%s)", d.unsupported, d.unsupportedReason.c_str(),
+                           d.unsupported > 1 ? ", ..." : "");
+    ImGui::PushTextWrapPos(kBox * 2 + ImGui::GetStyle().ItemSpacing.x);
+    ImGui::TextColored(kDimColor, "Each texture keeps its format and mips; BC formats are compressed again, which can "
+                                  "soften fine detail a little. The originals go to the Recycle Bin.");
+    ImGui::PopTextWrapPos();
+    ImGui::Spacing();
+
+    bool close = false;
+    ImGui::BeginDisabled(count == 0);
+    if (ImGui::Button("Tint", ImVec2(120, 0))) StartTint();
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", ImVec2(120, 0)) || ImGui::IsKeyPressed(ImGuiKey_Escape)) close = true;
+    lastTint_ = s;
+    if (close) ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
+    if (close) tintDialog_.reset();
+}
+
+void App::StartTint() {
+    const TintDialog& d = *tintDialog_;
+    std::vector<TextureFile> files = d.files;
+    if (d.includeMaps) files.insert(files.end(), d.maps.begin(), d.maps.end());
+    tintTotal_ = files.size();
+    tintProgress_ = std::make_shared<std::atomic<size_t>>(0);
+    tintJob_ = std::async(std::launch::async, [files = std::move(files), s = d.settings, progress = tintProgress_] {
+        const HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);  // the Recycle Bin is the shell's
+        TintResult r;
+        for (const TextureFile& f : files) {
+            fs::path tinted = f.path;
+            tinted += L".tinting";
+            std::string e = TintTexture(f.path, tinted, s);
+            std::error_code ec;
+            if (e.empty() && !MoveToRecycleBin(f.path)) {
+                e = ToUtf8(f.path.filename()) + ": could not be replaced (in use by the game?).";
+            } else if (e.empty()) {
+                // The original is in the Recycle Bin now, so a tint can be undone from there.
+                fs::rename(tinted, f.path, ec);
+                if (ec)
+                    e = ToUtf8(f.path.filename()) + ": the tinted copy could not be put in place; it was left as " +
+                        ToUtf8(tinted.filename()) + " and the original is in the Recycle Bin.";
+            }
+            if (!e.empty()) {
+                if (!r.failed++) r.error = e;
+                if (Exists(f.path)) fs::remove(tinted, ec);  // nothing was replaced
+            } else {
+                ++r.done;
+            }
+            ++*progress;
+        }
+        if (SUCCEEDED(com)) CoUninitialize();
+        return r;
+    });
 }
 
 void App::DrawMoveMenu(const std::vector<const TextureFile*>& files, bool copy) {
@@ -1704,6 +1920,9 @@ void App::DrawCardMenu(const TextureFile& file, bool isMod, const TextureInfo* i
         const bool encrypted = info && info->encrypted;
         if (ImGui::MenuItem("Open in editor", nullptr, false, !encrypted)) OpenWithShell(file.path);
         if (encrypted) ImGui::SetItemTooltip("Encrypted (resorep1) textures can't be opened by image editors.");
+        if (ImGui::MenuItem("Tint...", nullptr, false, !encrypted && !tintJob_.valid())) OpenTint({&file});
+        ImGui::SetItemTooltip(encrypted ? "Encrypted (resorep1) textures can't be tinted."
+                                        : "Recolor this texture, e.g. turn Black Ice red. The original goes to the Recycle Bin.");
     } else {
         if (ImGui::MenuItem("Replace with .dds...")) Defer([this, hash = file.hash] { ReplaceDump(hash); });
         DrawAddToModMenu({&file});
@@ -1740,6 +1959,8 @@ void App::DrawSelectionMenu(bool isMod) {
         if (ImGui::MenuItem("Turn off", nullptr, false, anyOn)) Defer([this, c = Copies(files)] { SetEnabled(c, false); });
         DrawMoveMenu(files, false);
         DrawMoveMenu(files, true);
+        if (ImGui::MenuItem("Tint...", nullptr, false, !tintJob_.valid())) OpenTint(files);
+        ImGui::SetItemTooltip("Recolor all of these, e.g. turn Black Ice red. The originals go to the Recycle Bin.");
     } else {
         DrawAddToModMenu(files);
     }
@@ -2010,6 +2231,10 @@ void App::DrawSelectionDetails(const std::vector<const TextureFile*>& files) {
             DrawMoveItems(files, true);
             ImGui::EndPopup();
         }
+        ImGui::BeginDisabled(tintJob_.valid());
+        if (ImGui::Button("Tint...", ImVec2(-1, 0))) OpenTint(files);
+        ImGui::EndDisabled();
+        ImGui::SetItemTooltip("Recolor all of these, e.g. turn Black Ice red. The originals go to the Recycle Bin.");
     } else {
         if (ImGui::Button("Add to mod...", ImVec2(-1, 0))) ImGui::OpenPopup("addtomod");
         ImGui::SetItemTooltip("Copies these textures into a mod as <hash>.dds, ready to edit.");

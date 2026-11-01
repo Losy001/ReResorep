@@ -106,3 +106,9 @@ add_executable(analyzer_test tests/analyzer_test.cpp manager/analyzer.cpp)
 target_include_directories(analyzer_test PRIVATE manager)
 target_link_libraries(analyzer_test PRIVATE resorep_core d3d11 d3dcompiler)
 add_test(NAME analyzer_test COMMAND analyzer_test)
+
+add_executable(tint_test tests/tint_test.cpp manager/tint.cpp manager/bc_encode.cpp manager/png_export.cpp
+               manager/analyzer.cpp)
+target_include_directories(tint_test PRIVATE manager)
+target_link_libraries(tint_test PRIVATE resorep_core d3d11 d3dcompiler windowscodecs ole32)
+add_test(NAME tint_test COMMAND tint_test)

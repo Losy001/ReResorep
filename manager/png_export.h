@@ -1,8 +1,17 @@
 #pragma once
+#include <cstdint>
 #include <filesystem>
 #include <string>
+#include <vector>
+
+#include "dds.h"
 
 namespace resorep::ui {
+
+// Decodes the first `mips` mips of the first slice to RGBA floats (width * height * 4 each, mip
+// sizes halving), on its own Direct3D device. These are the stored values: sRGB textures are not
+// converted and SNORM ones stay -1..1. Returns an error message, empty on success.
+std::string DecodeMips(const DdsImage& img, uint32_t mips, std::vector<std::vector<float>>& out);
 
 // Decodes a texture file's top mip (first slice) and saves it as an 8-bit RGBA PNG (with alpha),
 // turned `quarterTurns` clockwise and then, if `mirror`, flipped left-to-right (the same order

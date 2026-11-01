@@ -22,6 +22,8 @@ add_executable(ReResorep WIN32
     thumbnails.cpp
     analyzer.cpp
     png_export.cpp
+    bc_encode.cpp
+    tint.cpp
     win_util.cpp
     theme.cpp
     manager.manifest

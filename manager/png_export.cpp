@@ -45,79 +45,6 @@ DXGI_FORMAT WithoutSrgb(DXGI_FORMAT f) {
 
 uint8_t ToByte(float v) { return uint8_t(std::lround(std::clamp(v, 0.0f, 1.0f) * 255.0f)); }
 
-std::string Decode(const DdsImage& img, std::vector<float>& rgba) {
-    const D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_0};
-    ComPtr<ID3D11Device> device;
-    ComPtr<ID3D11DeviceContext> context;
-    HRESULT hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, levels, 2, D3D11_SDK_VERSION,
-                                   &device, nullptr, &context);
-    if (FAILED(hr))
-        hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0, levels, 2, D3D11_SDK_VERSION, &device,
-                               nullptr, &context);
-    if (FAILED(hr)) return "Could not start Direct3D to decode the texture.";
-
-    ComPtr<ID3DBlob> vsBlob, psBlob;
-    ComPtr<ID3D11VertexShader> vs;
-    ComPtr<ID3D11PixelShader> ps;
-    if (FAILED(D3DCompile(kShader, sizeof(kShader) - 1, nullptr, nullptr, nullptr, "vs", "vs_4_0", 0, 0, &vsBlob,
-                          nullptr)) ||
-        FAILED(D3DCompile(kShader, sizeof(kShader) - 1, nullptr, nullptr, nullptr, "ps", "ps_4_0", 0, 0, &psBlob,
-                          nullptr)) ||
-        FAILED(device->CreateVertexShader(vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), nullptr, &vs)) ||
-        FAILED(device->CreatePixelShader(psBlob->GetBufferPointer(), psBlob->GetBufferSize(), nullptr, &ps)))
-        return "Could not prepare the texture decoder.";
-
-    // Only the top mip of the first slice is needed.
-    D3D11_TEXTURE2D_DESC desc{};
-    desc.Width = img.width;
-    desc.Height = img.height;
-    desc.MipLevels = 1;
-    desc.ArraySize = 1;
-    desc.Format = WithoutSrgb(ShaderViewFormat(img.format));
-    desc.SampleDesc.Count = 1;
-    desc.Usage = D3D11_USAGE_IMMUTABLE;
-    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-    const DdsSubresource& top = img.subresources[0];
-    const D3D11_SUBRESOURCE_DATA data{img.data.data() + top.offset, top.rowPitch, top.slicePitch};
-    ComPtr<ID3D11Texture2D> tex;
-    ComPtr<ID3D11ShaderResourceView> srv;
-    if (FAILED(device->CreateTexture2D(&desc, &data, &tex)) ||
-        FAILED(device->CreateShaderResourceView(tex.Get(), nullptr, &srv)))
-        return std::string("This texture's format (") + FormatName(img.format) + ") can't be decoded on this PC.";
-
-    D3D11_TEXTURE2D_DESC td{img.width, img.height, 1, 1, DXGI_FORMAT_R32G32B32A32_FLOAT, {1, 0},
-                            D3D11_USAGE_DEFAULT, D3D11_BIND_RENDER_TARGET};
-    ComPtr<ID3D11Texture2D> target, staging;
-    ComPtr<ID3D11RenderTargetView> rtv;
-    if (FAILED(device->CreateTexture2D(&td, nullptr, &target)) ||
-        FAILED(device->CreateRenderTargetView(target.Get(), nullptr, &rtv)))
-        return "Not enough video memory to decode this texture.";
-    td.Usage = D3D11_USAGE_STAGING;
-    td.BindFlags = 0;
-    td.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-    if (FAILED(device->CreateTexture2D(&td, nullptr, &staging))) return "Not enough memory to decode this texture.";
-
-    const D3D11_VIEWPORT vp{0, 0, float(img.width), float(img.height), 0, 1};
-    context->OMSetRenderTargets(1, rtv.GetAddressOf(), nullptr);
-    context->RSSetViewports(1, &vp);
-    context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    context->VSSetShader(vs.Get(), nullptr, 0);
-    context->PSSetShader(ps.Get(), nullptr, 0);
-    context->PSSetShaderResources(0, 1, srv.GetAddressOf());
-    context->Draw(3, 0);
-    context->CopyResource(staging.Get(), target.Get());
-
-    D3D11_MAPPED_SUBRESOURCE mapped;
-    if (FAILED(context->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped))) return "Could not read the decoded texture.";
-    const size_t rowFloats = size_t(img.width) * 4;
-    rgba.resize(rowFloats * img.height);
-    for (uint32_t y = 0; y < img.height; ++y)
-        std::memcpy(&rgba[y * rowFloats], static_cast<const uint8_t*>(mapped.pData) + size_t(y) * mapped.RowPitch,
-                    rowFloats * sizeof(float));
-    context->Unmap(staging.Get(), 0);
-    return {};
-}
-
 std::string WritePng(const std::filesystem::path& path, uint32_t width, uint32_t height, std::vector<uint8_t>& px) {
     ComPtr<IWICImagingFactory> factory;
     ComPtr<IWICStream> stream;
@@ -140,6 +67,98 @@ std::string WritePng(const std::filesystem::path& path, uint32_t width, uint32_t
 
 }  // namespace
 
+std::string DecodeMips(const DdsImage& img, uint32_t mips, std::vector<std::vector<float>>& out) {
+    mips = std::min(mips, img.mipLevels);
+    if (img.subresources.size() < mips || !mips) return "This texture has no image data.";
+    const D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_0};
+    ComPtr<ID3D11Device> device;
+    ComPtr<ID3D11DeviceContext> context;
+    HRESULT hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, levels, 2, D3D11_SDK_VERSION,
+                                   &device, nullptr, &context);
+    if (FAILED(hr))
+        hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0, levels, 2, D3D11_SDK_VERSION, &device,
+                               nullptr, &context);
+    if (FAILED(hr)) return "Could not start Direct3D to decode the texture.";
+
+    ComPtr<ID3DBlob> vsBlob, psBlob;
+    ComPtr<ID3D11VertexShader> vs;
+    ComPtr<ID3D11PixelShader> ps;
+    if (FAILED(D3DCompile(kShader, sizeof(kShader) - 1, nullptr, nullptr, nullptr, "vs", "vs_4_0", 0, 0, &vsBlob,
+                          nullptr)) ||
+        FAILED(D3DCompile(kShader, sizeof(kShader) - 1, nullptr, nullptr, nullptr, "ps", "ps_4_0", 0, 0, &psBlob,
+                          nullptr)) ||
+        FAILED(device->CreateVertexShader(vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), nullptr, &vs)) ||
+        FAILED(device->CreatePixelShader(psBlob->GetBufferPointer(), psBlob->GetBufferSize(), nullptr, &ps)))
+        return "Could not prepare the texture decoder.";
+
+    // The first slice's mips are the first subresources.
+    D3D11_TEXTURE2D_DESC desc{};
+    desc.Width = img.width;
+    desc.Height = img.height;
+    desc.MipLevels = mips;
+    desc.ArraySize = 1;
+    desc.Format = WithoutSrgb(ShaderViewFormat(img.format));
+    desc.SampleDesc.Count = 1;
+    desc.Usage = D3D11_USAGE_IMMUTABLE;
+    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    std::vector<D3D11_SUBRESOURCE_DATA> data;
+    for (uint32_t m = 0; m < mips; ++m) {
+        const DdsSubresource& s = img.subresources[m];
+        data.push_back({img.data.data() + s.offset, s.rowPitch, s.slicePitch});
+    }
+    ComPtr<ID3D11Texture2D> tex;
+    if (FAILED(device->CreateTexture2D(&desc, data.data(), &tex)))
+        return std::string("This texture's format (") + FormatName(img.format) + ") can't be decoded on this PC.";
+
+    out.assign(mips, {});
+    for (uint32_t m = 0; m < mips; ++m) {
+        const uint32_t w = std::max(1u, img.width >> m), h = std::max(1u, img.height >> m);
+        // A view of just this mip, so Load(pos, 0) reads it.
+        D3D11_SHADER_RESOURCE_VIEW_DESC sd{};
+        sd.Format = desc.Format;
+        sd.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+        sd.Texture2D.MostDetailedMip = m;
+        sd.Texture2D.MipLevels = 1;
+        ComPtr<ID3D11ShaderResourceView> srv;
+        if (FAILED(device->CreateShaderResourceView(tex.Get(), &sd, &srv)))
+            return std::string("This texture's format (") + FormatName(img.format) + ") can't be decoded on this PC.";
+
+        D3D11_TEXTURE2D_DESC td{w, h, 1, 1, DXGI_FORMAT_R32G32B32A32_FLOAT, {1, 0}, D3D11_USAGE_DEFAULT,
+                                D3D11_BIND_RENDER_TARGET};
+        ComPtr<ID3D11Texture2D> target, staging;
+        ComPtr<ID3D11RenderTargetView> rtv;
+        if (FAILED(device->CreateTexture2D(&td, nullptr, &target)) ||
+            FAILED(device->CreateRenderTargetView(target.Get(), nullptr, &rtv)))
+            return "Not enough video memory to decode this texture.";
+        td.Usage = D3D11_USAGE_STAGING;
+        td.BindFlags = 0;
+        td.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+        if (FAILED(device->CreateTexture2D(&td, nullptr, &staging))) return "Not enough memory to decode this texture.";
+
+        const D3D11_VIEWPORT vp{0, 0, float(w), float(h), 0, 1};
+        context->OMSetRenderTargets(1, rtv.GetAddressOf(), nullptr);
+        context->RSSetViewports(1, &vp);
+        context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        context->VSSetShader(vs.Get(), nullptr, 0);
+        context->PSSetShader(ps.Get(), nullptr, 0);
+        context->PSSetShaderResources(0, 1, srv.GetAddressOf());
+        context->Draw(3, 0);
+        context->CopyResource(staging.Get(), target.Get());
+
+        D3D11_MAPPED_SUBRESOURCE mapped;
+        if (FAILED(context->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped)))
+            return "Could not read the decoded texture.";
+        const size_t rowFloats = size_t(w) * 4;
+        std::vector<float>& rgba = out[m];
+        rgba.resize(rowFloats * h);
+        for (uint32_t y = 0; y < h; ++y)
+            std::memcpy(&rgba[y * rowFloats], static_cast<const uint8_t*>(mapped.pData) + size_t(y) * mapped.RowPitch,
+                        rowFloats * sizeof(float));
+        context->Unmap(staging.Get(), 0);
+    }
+    return {};
+}
+
 std::string ExportPng(const std::filesystem::path& texture, const std::filesystem::path& png, int quarterTurns,
                       bool mirror) {
     DdsImage img;
@@ -151,8 +170,9 @@ std::string ExportPng(const std::filesystem::path& texture, const std::filesyste
     if (img.isVolume) return "3D (volume) textures can't be exported as PNG.";
     if (img.subresources.empty() || !img.width || !img.height) return "This texture has no image data.";
 
-    std::vector<float> rgba;
-    if (std::string e = Decode(img, rgba); !e.empty()) return e;
+    std::vector<std::vector<float>> decoded;
+    if (std::string e = DecodeMips(img, 1, decoded); !e.empty()) return e;
+    const std::vector<float>& rgba = decoded[0];
 
     const int channels = ChannelCount(img.format);
     const bool snorm = IsSnormFormat(img.format);
