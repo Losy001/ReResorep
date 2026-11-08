@@ -62,6 +62,7 @@ file(COPY "${BIN}/ReResorep.exe" DESTINATION "${DIR}")
 file(COPY "${PROXY}" DESTINATION "${DIR}/proxy")
 configure_file("${SRC}/packaging/README.txt" "${DIR}/README.txt" @ONLY NEWLINE_STYLE CRLF)
 configure_file("${SRC}/CREDITS.md" "${DIR}/CREDITS.md" COPYONLY)
+configure_file("${SRC}/LICENSE" "${DIR}/LICENSE.txt" COPYONLY)
 
 file(READ "${SRC}/third_party/imgui/LICENSE.txt" IMGUI_LICENSE)
 file(WRITE "${DIR}/THIRD_PARTY_NOTICES.txt"

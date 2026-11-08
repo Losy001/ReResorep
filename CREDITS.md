@@ -1,6 +1,7 @@
 # Credits
 
-**ReResorep** is made by sosigdoggo.
+**ReResorep** is made by sosigdoggo and released under the GNU General Public License v3.0
+(see `LICENSE`).
 
 ## Resorep by RayWing (2017)
 

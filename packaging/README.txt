@@ -77,8 +77,12 @@ Files in this download
   ReResorep.exe            the texture manager
   proxy\d3d11.dll          the part that goes into the game folder
   CREDITS.md               credits
+  LICENSE.txt              ReResorep's licence (GNU GPL v3.0)
   THIRD_PARTY_NOTICES.txt  licences of included third-party code
   SHA256SUMS.txt           checksums to verify the download
+
+ReResorep is free software under the GNU General Public License v3.0; the
+source is at https://github.com/SosigDOGGO/ReResorep.
 
 ReResorep is a fan-made modding tool and is not affiliated with or endorsed by
 Ubisoft or any game developer.

@@ -269,3 +269,9 @@ The **Games** tab shows which proxy version each game has installed.
 
 Credits are in [CREDITS.md](CREDITS.md) and in the app's **About** tab: the original Resorep by
 RayWing, Dear ImGui (MIT) and Blowfish.
+
+## License
+
+ReResorep is free software under the [GNU General Public License v3.0](LICENSE). You can use,
+change and share it; if you share a changed version, it has to stay under the GPL with its source
+available. Dear ImGui in `third_party/imgui` keeps its own MIT license.
