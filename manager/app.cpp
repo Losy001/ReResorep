@@ -76,6 +76,38 @@ const ImU32 kKindColors[] = {0, 0, IM_COL32(120, 150, 255, 255), IM_COL32(200, 2
                              IM_COL32(90, 210, 255, 255)};
 const char* const kKindBadges[] = {"", "", "normal", "depth", "packed"};
 
+// The Formats dropdown's groups; their names are also what reresorep.ini stores.
+struct FormatGroup {
+    const char* name;
+    const char* tooltip;
+};
+constexpr FormatGroup kFormatGroups[] = {
+    {"BC1", "BC1 / DXT1: colour, no or 1-bit alpha"},
+    {"BC2", "BC2 / DXT3: colour with sharp alpha"},
+    {"BC3", "BC3 / DXT5: colour with smooth alpha"},
+    {"BC4", "BC4: one channel (depth, roughness, masks)"},
+    {"BC5", "BC5: two channels (usually normal maps)"},
+    {"BC6H", "BC6H: HDR colour"},
+    {"BC7", "BC7: high quality colour (+ alpha)"},
+    {"Uncompressed", "RGBA8, BGRA8, R8, float formats and the like"},
+    {"Unknown", "The header could not be read (e.g. encrypted resorep1 files)"},
+};
+
+constexpr float kFormatFilterWidth = 150.0f;  // the dropdown on the toolbar
+
+// Index into kFormatGroups.
+size_t FormatGroupOf(DXGI_FORMAT f) {
+    if (f >= DXGI_FORMAT_BC1_TYPELESS && f <= DXGI_FORMAT_BC1_UNORM_SRGB) return 0;
+    if (f >= DXGI_FORMAT_BC2_TYPELESS && f <= DXGI_FORMAT_BC2_UNORM_SRGB) return 1;
+    if (f >= DXGI_FORMAT_BC3_TYPELESS && f <= DXGI_FORMAT_BC3_UNORM_SRGB) return 2;
+    if (f >= DXGI_FORMAT_BC4_TYPELESS && f <= DXGI_FORMAT_BC4_SNORM) return 3;
+    if (f >= DXGI_FORMAT_BC5_TYPELESS && f <= DXGI_FORMAT_BC5_SNORM) return 4;
+    if (f >= DXGI_FORMAT_BC6H_TYPELESS && f <= DXGI_FORMAT_BC6H_SF16) return 5;
+    if (f >= DXGI_FORMAT_BC7_TYPELESS && f <= DXGI_FORMAT_BC7_UNORM_SRGB) return 6;
+    if (f == DXGI_FORMAT_UNKNOWN) return 8;
+    return 7;
+}
+
 // Fits a w x h image into a box, keeping aspect ratio.
 ImVec2 Fit(uint32_t w, uint32_t h, float box) {
     if (!w || !h) return ImVec2(box, box);
@@ -1452,9 +1484,14 @@ void App::DrawToolbarDumps() {
     ImGui::SameLine();
     ImGui::Checkbox("Hide already modded", &hideModdedDumps_);
     if (!settings_.Dumping()) {
+        // Short, so the first row keeps room for Rotate / Mirror / Size on the right.
         ImGui::SameLine();
-        ImGui::TextColored(kDimColor, settings_.lowImpact ? "Dumping is off - Low impact mode is on (Settings)."
-                                                          : "Dumping is off - enable it in Settings.");
+        ImGui::TextColored(kDimColor, "Dumping off (?)");
+        ImGui::SetItemTooltip(settings_.lowImpact
+                                  ? "Dumping is off because Low impact mode is on (Settings).\n"
+                                    "Turn Low impact mode off to dump textures the game loads."
+                                  : "Dumping is off. Turn on Mod creator mode and \"Dump textures the game loads\"\n"
+                                    "in Settings to save the textures the game loads here.");
     }
     ImGui::SameLine();
     ImGui::BeginDisabled(!settings_.Dumping());
@@ -1600,13 +1637,80 @@ void App::DrawPreview(ImDrawList* dl, ID3D11ShaderResourceView* srv, uint32_t w,
 }
 
 void App::DrawViewOptions(bool isMod) {
-    // Second toolbar row: how the grid is ordered and how previews are oriented.
+    // Called right after the tab's first toolbar row. How previews are shown (rotation, mirror,
+    // size) goes at the right end of that row when it fits; the second row holds sorting and
+    // filters. Groups that don't fit start a new line, so a narrow window never pushes any out
+    // of sight.
     SortOrder& order = settings_.SortFor(isMod);
     const SortOption* current = &kSortOptions[0];
     for (const SortOption& o : kSortOptions)
         if (order.key == o.key && (isMod || !o.modsOnly)) current = &o;
     bool changed = false;
 
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const float rowRight = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
+    auto fits = [&](float width, float gap) { return ImGui::GetItemRectMax().x + gap + width <= rowRight; };
+    auto flow = [&](float width, float gap) {
+        if (fits(width, gap)) ImGui::SameLine(0, gap);
+    };
+    auto checkboxWidth = [&](const char* label) {
+        return ImGui::GetFrameHeight() + style.ItemInnerSpacing.x + ImGui::CalcTextSize(label, nullptr, true).x;
+    };
+
+    constexpr float kRotateWidth = 80.0f, kSizeWidth = 120.0f, kGroupGap = 20.0f;
+    const float displayWidth = ImGui::CalcTextSize("Rotate").x + style.ItemSpacing.x + kRotateWidth +
+                               style.ItemSpacing.x + checkboxWidth("Mirror") + kGroupGap + kSizeWidth;
+    // On the current line against the right edge if there is room, else at the start of a new line.
+    auto placeDisplay = [&] {
+        if (!fits(displayWidth, kGroupGap)) return;
+        ImGui::SameLine();
+        ImGui::SetCursorScreenPos(ImVec2(rowRight - displayWidth, ImGui::GetCursorScreenPos().y));
+    };
+    auto drawDisplay = [&] {
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted("Rotate");
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(kRotateWidth);
+        static const char* kRotations[] = {"0\xC2\xB0", "90\xC2\xB0", "180\xC2\xB0", "270\xC2\xB0"};
+        int rotation = settings_.previewRotation / 90;
+        if (ImGui::Combo("##rotate", &rotation, kRotations, 4)) {
+            settings_.previewRotation = rotation * 90;
+            changed = true;
+        }
+        ImGui::SetItemTooltip("Turns previews clockwise. Only changes how they are shown, not the files.");
+        ImGui::SameLine();
+        changed |= ImGui::Checkbox("Mirror", &settings_.previewMirror);
+        ImGui::SetItemTooltip("Flips previews left-to-right (after rotating).");
+
+        ImGui::SameLine(0, kGroupGap);
+        ImGui::SetNextItemWidth(kSizeWidth);
+        // Ctrl+click (Dear ImGui's own) or Shift+click (Settings) turns the slider into a box to type a size in.
+        ImGuiSliderFlags sizeFlags = ImGuiSliderFlags_AlwaysClamp;
+        if (settings_.shiftClickToType) {
+            const ImGuiID id = ImGui::GetID("##size");
+            const ImGuiIO& io = ImGui::GetIO();
+            const ImVec2 min = ImGui::GetCursorScreenPos();
+            if (io.KeyShift && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && ImGui::IsWindowHovered() &&
+                ImGui::IsMouseHoveringRect(min, ImVec2(min.x + kSizeWidth, min.y + ImGui::GetFrameHeight()))) {
+                GImGui->NavActivateId = id;
+                GImGui->NavActivateFlags = ImGuiActivateFlags_PreferInput;
+            } else if (io.KeyCtrl && !ImGui::TempInputIsActive(id)) {
+                sizeFlags |= ImGuiSliderFlags_NoInput;  // Ctrl+click just drags; Ctrl+A etc. still work once typing
+            }
+        }
+        ImGui::SliderFloat("##size", &thumbSize_, 64.0f, 256.0f, "Size %.0f", sizeFlags);
+        ImGui::SetItemTooltip(settings_.shiftClickToType ? "Shift+click to type a size (64-256)."
+                                                         : "Ctrl+click to type a size (64-256).");
+    };
+
+    // End of the first row.
+    const bool displayOnTop = fits(displayWidth, kGroupGap);
+    if (displayOnTop) {
+        placeDisplay();
+        drawDisplay();
+    }
+
+    // Second row: sorting, then filters.
     ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted("Sort by");
     ImGui::SameLine();
@@ -1629,62 +1733,84 @@ void App::DrawViewOptions(bool isMod) {
     ImGui::SetItemTooltip(order.descending ? "Descending (largest / newest first)"
                                            : "Ascending (smallest / oldest first)");
 
-    ImGui::SameLine(0, 20);
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted("Rotate");
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(80);
-    static const char* kRotations[] = {"0\xC2\xB0", "90\xC2\xB0", "180\xC2\xB0", "270\xC2\xB0"};
-    int rotation = settings_.previewRotation / 90;
-    if (ImGui::Combo("##rotate", &rotation, kRotations, 4)) {
-        settings_.previewRotation = rotation * 90;
-        changed = true;
-    }
-    ImGui::SetItemTooltip("Turns previews clockwise. Only changes how they are shown, not the files.");
-    ImGui::SameLine();
-    changed |= ImGui::Checkbox("Mirror", &settings_.previewMirror);
-    ImGui::SetItemTooltip("Flips previews left-to-right (after rotating).");
-
-    ImGui::SameLine(0, 20);
     TextureFilters& flt = settings_.FiltersFor(isMod);
+    flow(kFormatFilterWidth, kGroupGap);
+    changed |= DrawFormatFilter(flt, isMod ? library_.mods() : library_.dumps());
+    flow(checkboxWidth("Hide normal maps"), style.ItemSpacing.x);
     changed |= ImGui::Checkbox("Hide normal maps", &flt.hideNormals);
-    ImGui::SameLine();
+    flow(checkboxWidth("Hide depth / grayscale"), style.ItemSpacing.x);
     changed |= ImGui::Checkbox("Hide depth / grayscale", &flt.hideGrayscale);
     ImGui::SetItemTooltip("Single-channel textures (BC4 and similar): depth/height, roughness, masks.\n"
                           "Grey-looking colour textures (concrete, metal, logos) are not hidden.\n"
                           "Texture types are detected automatically in the background.");
-    ImGui::SameLine();
+    flow(checkboxWidth("Hide packed / masks"), style.ItemSpacing.x);
     changed |= ImGui::Checkbox("Hide packed / masks", &flt.hidePacked);
     ImGui::SetItemTooltip("Data textures that are not pictures:\n"
                           "- the blue/cyan/teal ones: grayscale maps (roughness, AO...) packed into one texture's channels\n"
                           "- flat red/green/blue material ID masks\n"
                           "Texture types are detected automatically in the background.");
-    ImGui::SameLine();
+    flow(checkboxWidth("Black Ice only"), style.ItemSpacing.x);
     changed |= ImGui::Checkbox("Black Ice only", &flt.onlyBlackIce);
     ImGui::SetItemTooltip("Only textures of the Black Ice weapon skin: icy cyan with white highlights and dark\n"
                           "cracks, on weapon-sized texture sheets. Detected by colour, so a few may be missed\n"
                           "or slip in.");
 
-    ImGui::SameLine(0, 20);
-    ImGui::SetNextItemWidth(120);
-    // Ctrl+click (Dear ImGui's own) or Shift+click (Settings) turns the slider into a box to type a size in.
-    ImGuiSliderFlags sizeFlags = ImGuiSliderFlags_AlwaysClamp;
-    if (settings_.shiftClickToType) {
-        const ImGuiID id = ImGui::GetID("##size");
-        const ImGuiIO& io = ImGui::GetIO();
-        const ImVec2 min = ImGui::GetCursorScreenPos();
-        if (io.KeyShift && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && ImGui::IsWindowHovered() &&
-            ImGui::IsMouseHoveringRect(min, ImVec2(min.x + 120, min.y + ImGui::GetFrameHeight()))) {
-            GImGui->NavActivateId = id;
-            GImGui->NavActivateFlags = ImGuiActivateFlags_PreferInput;
-        } else if (io.KeyCtrl && !ImGui::TempInputIsActive(id)) {
-            sizeFlags |= ImGuiSliderFlags_NoInput;  // Ctrl+click just drags; Ctrl+A etc. still work once typing
-        }
+    if (!displayOnTop) {  // the first row was full: the right end of this one, or a line of its own
+        placeDisplay();
+        drawDisplay();
     }
-    ImGui::SliderFloat("##size", &thumbSize_, 64.0f, 256.0f, "Size %.0f", sizeFlags);
-    ImGui::SetItemTooltip(settings_.shiftClickToType ? "Shift+click to type a size (64-256)."
-                                                     : "Ctrl+click to type a size (64-256).");
     if (changed) settings_.Save();
+}
+
+bool App::DrawFormatFilter(TextureFilters& flt, const std::vector<TextureFile>& files) {
+    constexpr size_t kGroups = IM_ARRAYSIZE(kFormatGroups);
+    std::string preview;
+    size_t shown = 0;
+    for (const FormatGroup& g : kFormatGroups) {
+        if (flt.hiddenFormats.count(g.name)) continue;
+        if (shown++ < 3) preview += (preview.empty() ? "" : ", ") + std::string(g.name);
+    }
+    if (shown == kGroups) preview = "All formats";
+    else if (shown == 0) preview = "No formats";
+    else if (shown > 3) preview = std::to_string(shown) + " of " + std::to_string(kGroups) + " formats";
+
+    bool changed = false;
+    ImGui::SetNextItemWidth(kFormatFilterWidth);
+    if (shown != kGroups) ImGui::PushStyleColor(ImGuiCol_Text, AccentTextColor());  // a reminder that it hides some
+    const bool open = ImGui::BeginCombo("##formats", preview.c_str(), ImGuiComboFlags_HeightLargest);
+    if (shown != kGroups) ImGui::PopStyleColor();
+    if (!open) {
+        ImGui::SetItemTooltip("Which texture formats are shown (BC1, BC3, BC7...).");
+        return false;
+    }
+    size_t counts[kGroups] = {};
+    for (const TextureFile& f : files) ++counts[FormatGroupOf(f.format)];
+    if (ImGui::SmallButton("All")) {
+        flt.hiddenFormats.clear();
+        changed = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("None")) {
+        for (const FormatGroup& g : kFormatGroups) flt.hiddenFormats.insert(g.name);
+        changed = true;
+    }
+    ImGui::Separator();
+    for (size_t i = 0; i < kGroups; ++i) {
+        const FormatGroup& g = kFormatGroups[i];
+        bool on = !flt.hiddenFormats.count(g.name);
+        ImGui::PushID(g.name);
+        if (ImGui::Checkbox(g.name, &on)) {
+            if (on) flt.hiddenFormats.erase(g.name);
+            else flt.hiddenFormats.insert(g.name);
+            changed = true;
+        }
+        ImGui::SetItemTooltip("%s", g.tooltip);
+        ImGui::SameLine(ImGui::GetFontSize() * 9);
+        ImGui::TextColored(kDimColor, "%zu", counts[i]);
+        ImGui::PopID();
+    }
+    ImGui::EndCombo();
+    return changed;
 }
 
 void App::DrawGrid(const std::vector<TextureFile>& files, bool isMod) {
@@ -1701,6 +1827,7 @@ void App::DrawGrid(const std::vector<TextureFile>& files, bool isMod) {
             if (flt.hideGrayscale && kind == TextureKind::Grayscale) continue;
             if (flt.hidePacked && kind == TextureKind::Packed) continue;
         }
+        if (!flt.hiddenFormats.empty() && flt.hiddenFormats.count(kFormatGroups[FormatGroupOf(f.format)].name)) continue;
         if (flt.onlyBlackIce && !IsBlackIce(f)) continue;
         if (MatchesFilter(f)) visible.push_back(&f);
     }
@@ -1744,6 +1871,10 @@ void App::DrawGrid(const std::vector<TextureFile>& files, bool isMod) {
     if (visible.empty() && flt.onlyBlackIce && !files.empty()) {
         ImGui::TextColored(kDimColor, analyzer_->Pending() ? "No Black Ice textures found yet; still analysing textures..."
                                                            : "No Black Ice textures here. Untick \"Black Ice only\" to see all.");
+        return;
+    }
+    if (visible.empty() && !flt.hiddenFormats.empty() && !files.empty()) {
+        ImGui::TextColored(kDimColor, "No textures here in the formats ticked under Formats.");
         return;
     }
     if (visible.empty()) {
@@ -1795,6 +1926,16 @@ void App::DrawGrid(const std::vector<TextureFile>& files, bool isMod) {
         storage->SetFloat(kRowHeight, rowHeight);
     }
 
+    // Before the cards, so a click that stops auto-scroll doesn't also select one.
+    float selectedY = -1.0f;
+    if (selection_)
+        for (size_t i = 0; i < visible.size(); ++i)
+            if (visible[i]->path == selection_->path) {
+                selectedY = ImGui::GetCursorPosY() + float(i / size_t(perRow)) * rowHeight;
+                break;
+            }
+    HandleGridMiddleClick(selectedY, rowHeight);
+
     ImGuiMultiSelectIO* ms = ImGui::BeginMultiSelect(ImGuiMultiSelectFlags_ClearOnEscape |
                                                          ImGuiMultiSelectFlags_ClearOnClickVoid |
                                                          ImGuiMultiSelectFlags_BoxSelect2d,
@@ -1819,6 +1960,86 @@ void App::DrawGrid(const std::vector<TextureFile>& files, bool isMod) {
 
     if (!picked_.empty() && ImGui::Shortcut(ImGuiKey_Delete))
         Defer([this, files = Copies(Picked())] { Recycle(files); });
+}
+
+void App::HandleGridMiddleClick(float selectedY, float rowHeight) {
+    const ImGuiIO& io = ImGui::GetIO();
+    AutoScroll& as = autoScroll_;
+    const int frame = ImGui::GetFrameCount();
+    if (as.active && as.frame != frame - 1) as.active = false;
+    as.frame = frame;
+
+    // A click that stopped auto-scroll belongs to it: hide it from the cards and box selection,
+    // its release included (that is what opens the right-click menu).
+    for (int b = 0; b < 3; ++b) {
+        if (!(swallowButtons_ & (1 << b))) continue;
+        if (io.MouseDown[b] || io.MouseReleased[b])
+            ImGui::SetKeyOwner(ImGui::MouseButtonToKey(b), ImGuiKeyOwner_Any, ImGuiInputFlags_LockThisFrame);
+        else
+            swallowButtons_ &= ~(1 << b);
+    }
+
+    if (!as.active) {
+        if (!ImGui::IsWindowHovered() || !ImGui::IsMouseClicked(ImGuiMouseButton_Middle)) return;
+        if (settings_.middleClickJumps) {
+            if (selectedY >= 0.0f)
+                ImGui::SetScrollY(selectedY - (ImGui::GetWindowHeight() - rowHeight) * 0.5f);  // centred
+            else if (selection_)
+                Status("", "The selected texture is not shown here (search, filters or the part picked on the left).");
+            return;
+        }
+        if (ImGui::GetScrollMaxY() <= 0.0f) return;  // nothing to scroll
+        as.active = true;
+        as.held = true;
+        as.dragged = false;
+        as.anchor = io.MousePos;
+        return;
+    }
+
+    // Like Chrome: a quick middle click leaves it on until the next click; holding the button
+    // and moving away scrolls until it is let go.
+    constexpr float kDeadZone = 10.0f;
+    const float dy = io.MousePos.y - as.anchor.y;
+    bool stop = false;
+    if (as.held) {
+        if (std::fabs(dy) > kDeadZone || std::fabs(io.MousePos.x - as.anchor.x) > kDeadZone) as.dragged = true;
+        if (!io.MouseDown[ImGuiMouseButton_Middle]) {
+            as.held = false;
+            stop = as.dragged;
+        }
+    }
+    for (int b = 0; b < 3; ++b)
+        if (io.MouseClicked[b]) {
+            stop = true;
+            swallowButtons_ |= 1 << b;
+            ImGui::SetKeyOwner(ImGui::MouseButtonToKey(b), ImGuiKeyOwner_Any, ImGuiInputFlags_LockThisFrame);
+        }
+    if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+        stop = true;
+        ImGui::SetKeyOwner(ImGuiKey_Escape, ImGuiKeyOwner_Any, ImGuiInputFlags_LockThisFrame);  // keep the selection
+    }
+    if (io.MouseWheel != 0.0f) stop = true;
+    if (stop) {
+        as.active = false;
+        return;
+    }
+
+    // Faster the further from where it started; nothing inside the dead zone.
+    const float away = std::max(0.0f, std::fabs(dy) - kDeadZone);
+    const float speed = away * 5.0f + away * away * 0.03f;  // pixels per second
+    if (away > 0.0f) ImGui::SetScrollY(ImGui::GetScrollY() + std::copysign(speed * io.DeltaTime, dy));
+
+    ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    const ImVec2 c = as.anchor;
+    const ImU32 fill = IM_COL32(30, 30, 34, 220), line = IM_COL32(220, 220, 225, 255);
+    dl->AddCircleFilled(c, 15.0f, fill);
+    dl->AddCircle(c, 15.0f, line, 0, 1.5f);
+    dl->AddCircleFilled(c, 2.5f, line);
+    dl->AddTriangleFilled(ImVec2(c.x, c.y - 11), ImVec2(c.x - 5, c.y - 5), ImVec2(c.x + 5, c.y - 5),
+                          ImGui::GetScrollY() > 0.0f ? line : IM_COL32(120, 120, 125, 255));
+    dl->AddTriangleFilled(ImVec2(c.x, c.y + 11), ImVec2(c.x + 5, c.y + 5), ImVec2(c.x - 5, c.y + 5),
+                          ImGui::GetScrollY() < ImGui::GetScrollMaxY() ? line : IM_COL32(120, 120, 125, 255));
 }
 
 void App::DrawCard(const TextureFile& file, bool isMod, float size) {
@@ -2753,6 +2974,20 @@ void App::DrawSettings() {
         settings_.Save();
     }
     HelpMarker("Clicking the Size slider with this key held opens a box to type an exact size in.");
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("Middle click in the texture list");
+    ImGui::SameLine();
+    bool middleChanged = ImGui::RadioButton("Auto-scroll", !settings_.middleClickJumps) && settings_.middleClickJumps;
+    ImGui::SameLine();
+    middleChanged |= ImGui::RadioButton("Jump to selected", settings_.middleClickJumps) && !settings_.middleClickJumps;
+    if (middleChanged) {
+        settings_.middleClickJumps = !settings_.middleClickJumps;
+        settings_.Save();
+    }
+    HelpMarker("Auto-scroll works like in a web browser: middle click, then move the mouse up or down to "
+               "scroll, faster the further you go; click again to stop. Or hold the middle button, move, "
+               "and let go to stop.\n\nJump to selected scrolls the list back to the texture shown in "
+               "the details panel.");
     if (ImGui::Checkbox("Separate sorting for Mods and Dumps", &settings_.separateSort)) {
         if (settings_.separateSort) settings_.dumpSort = settings_.sort;  // Dumps start from what is set now
         settings_.Save();
@@ -2763,8 +2998,8 @@ void App::DrawSettings() {
         if (settings_.separateFilters) settings_.dumpFilters = settings_.filters;  // Dumps start from what is set now
         settings_.Save();
     }
-    HelpMarker("The Hide normal maps / depth / packed and Black Ice only boxes are set separately on the "
-               "Mods and Dumps tabs. Off: one set of filters for both. The search box is always shared.");
+    HelpMarker("The Hide normal maps / depth / packed and Black Ice only boxes and the Formats dropdown are "
+               "set separately on the Mods and Dumps tabs. Off: one set of filters for both. The search box is always shared.");
 
     ImGui::SeparatorText("Labels");
     ImGui::Text("%zu label(s) in %s", labels_.size(), ToUtf8(LabelsFile()).c_str());

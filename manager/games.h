@@ -33,6 +33,9 @@ struct TextureFilters {
     bool hideGrayscale = false;
     bool hidePacked = false;
     bool onlyBlackIce = false;
+    // Format groups ("BC1", "BC7", "Uncompressed"...) unticked in the Formats dropdown. Hidden
+    // rather than shown, so a group added later starts out visible.
+    std::set<std::string> hiddenFormats;
 };
 
 // Everything the manager persists (reresorep.ini next to the exe).
@@ -53,6 +56,9 @@ struct ManagerSettings {
     bool previewMirror = false;
     bool sharpZoom = true;  // zoomed-in preview shows hard-edged texels instead of blending them
     bool shiftClickToType = false;  // Shift+click instead of Ctrl+click types a value into the Size slider
+    // Middle-clicking the Mods/Dumps grid jumps back to the selected texture instead of
+    // starting Chrome-style auto-scroll.
+    bool middleClickJumps = false;
     uint32_t accentColor = 0x4296FA;  // 0xRRGGBB
     TextureFilters filters;      // both tabs, or only Mods when separateFilters
     TextureFilters dumpFilters;  // the Dumps tab when separateFilters

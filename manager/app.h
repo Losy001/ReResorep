@@ -65,6 +65,7 @@ private:
     std::wstring ImportDir() const { return modView_ == ModView::Folder ? viewFolder_ : std::wstring(); }
     void DrawToolbarDumps();
     void DrawViewOptions(bool isMod);
+    bool DrawFormatFilter(TextureFilters& filters, const std::vector<TextureFile>& files);  // true when changed
     void SortVisible(std::vector<const TextureFile*>& files, bool isMod) const;
     // Draws a texture with the chosen preview rotation/mirroring, fitted into a box.
     // extraTurns/extraMirror add to the global setting (used by the details preview's own buttons).
@@ -73,6 +74,9 @@ private:
     ImVec2 PreviewSize(uint32_t w, uint32_t h, float box, int extraTurns = 0) const;
     void DrawGrid(const std::vector<TextureFile>& files, bool isMod);
     void DrawCard(const TextureFile& file, bool isMod, float size);
+    // Middle click in the grid: Chrome-style auto-scroll, or back to the selected texture.
+    // `selectedY` is where the selected texture's row starts (scroll space), or < 0 if not shown.
+    void HandleGridMiddleClick(float selectedY, float rowHeight);
     void DrawCardMenu(const TextureFile& file, bool isMod, const TextureInfo* info);  // right-click on one
     void DrawSelectionMenu(bool isMod);  // right-click on one of several selected
     void DrawDetails();
@@ -244,6 +248,14 @@ private:
     bool showDisabled_ = true;
     bool hideModdedDumps_ = false;
     float thumbSize_ = 128.0f;
+    struct AutoScroll {
+        bool active = false;
+        bool held = true;       // the middle button is still down from the click that started it
+        bool dragged = false;   // moved away while held: releasing stops it (else it stays on)
+        ImVec2 anchor;
+        int frame = -1;         // last frame it ran; a gap (the grid wasn't drawn) stops it
+    } autoScroll_;
+    int swallowButtons_ = 0;  // bit per mouse button: its click stopped auto-scroll, so the grid ignores it until released
     ModView modView_ = ModView::All;
     std::wstring viewFolder_;
     std::wstring newFolderParent_;

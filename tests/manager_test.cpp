@@ -132,6 +132,8 @@ static void TestSettingsAndHashing() {
 
     s.ownFolders[GameKey(exe)] = h.sha256.substr(0, 16);
     s.profile = exe;
+    s.filters.hiddenFormats = {"BC4", "BC5"};
+    s.middleClickJumps = true;
     CHECK(s.FoldersFor(exe).first == GameFolder(h.sha256) / L"modded");
     CHECK(GameFolder(h.sha256).filename() == L"ba7816bf8f01cfea");
 
@@ -151,6 +153,9 @@ static void TestSettingsAndHashing() {
     CHECK(!loaded.NeedsHash(exe));
     CHECK(loaded.UsesOwnFolders(exe) && loaded.FoldersFor(exe) == s.FoldersFor(exe));
     CHECK(GameKey(loaded.profile) == GameKey(exe));
+    CHECK((loaded.filters.hiddenFormats == std::set<std::string>{"BC4", "BC5"}));
+    CHECK(loaded.dumpFilters.hiddenFormats.empty());
+    CHECK(loaded.middleClickJumps);
     // Path keys ignore case.
     CHECK(loaded.UsesOwnFolders(fs::path(ToUpperForTest(exe.wstring()))));
 

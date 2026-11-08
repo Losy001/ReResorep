@@ -66,6 +66,7 @@ void ManagerSettings::Load() {
     previewMirror = ini.GetBool("ui_preview_mirror", false);
     sharpZoom = ini.GetBool("ui_sharp_zoom", true);
     shiftClickToType = ini.GetBool("ui_shift_click_to_type", false);
+    middleClickJumps = ini.GetOr("ui_middle_click", "autoscroll") == "selected";
     accentColor = ParseHexColor(ini.GetOr("ui_accent_color", ""), kDefaultAccent);
     auto loadFilters = [&](const std::string& prefix) {
         TextureFilters f;
@@ -73,6 +74,14 @@ void ManagerSettings::Load() {
         f.hideGrayscale = ini.GetBool(prefix + "hide_grayscale", false);
         f.hidePacked = ini.GetBool(prefix + "hide_packed", false);
         f.onlyBlackIce = ini.GetBool(prefix + "only_black_ice", false);
+        // "BC4,BC5"
+        const std::string hidden = ini.GetOr(prefix + "hide_formats", "");
+        for (size_t start = 0; start <= hidden.size();) {
+            size_t comma = hidden.find(',', start);
+            if (comma == std::string::npos) comma = hidden.size();
+            if (comma > start) f.hiddenFormats.insert(hidden.substr(start, comma - start));
+            start = comma + 1;
+        }
         return f;
     };
     filters = loadFilters("ui_");
@@ -118,12 +127,16 @@ bool ManagerSettings::Save() const {
     ini.SetBool("ui_preview_mirror", previewMirror);
     ini.SetBool("ui_sharp_zoom", sharpZoom);
     ini.SetBool("ui_shift_click_to_type", shiftClickToType);
+    ini.Set("ui_middle_click", middleClickJumps ? "selected" : "autoscroll");
     ini.Set("ui_accent_color", HexColor(accentColor));
     auto saveFilters = [&](const std::string& prefix, const TextureFilters& f) {
         ini.SetBool(prefix + "hide_normals", f.hideNormals);
         ini.SetBool(prefix + "hide_grayscale", f.hideGrayscale);
         ini.SetBool(prefix + "hide_packed", f.hidePacked);
         ini.SetBool(prefix + "only_black_ice", f.onlyBlackIce);
+        std::string hidden;
+        for (const std::string& g : f.hiddenFormats) hidden += (hidden.empty() ? "" : ",") + g;
+        ini.Set(prefix + "hide_formats", hidden);
     };
     saveFilters("ui_", filters);
     saveFilters("ui_dumps_", dumpFilters);
