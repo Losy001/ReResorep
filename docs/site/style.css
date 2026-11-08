@@ -1,19 +1,47 @@
 /* ReResorep site. System fonts only: Bahnschrift ships with Windows 10 and 11. */
 
-:root {
-  --page: #d9dbde;       /* neutral texture-viewer grey */
-  --panel: #f0f1f2;
-  --ink: #1e2126;        /* slate */
-  --muted: #4c525b;
-  --rule: #b9bdc3;
-  --link: #1f66c9;       /* the app's blue, darkened for text on light */
-  --app-bg: #2a2d33;     /* the app's dark window */
-  --app-frame: #3a3e46;
-  --app-text: #e3e5e8;
-  --app-dim: #a3a8b0;
-  --app-accent: #4296fa; /* the app's default accent */
+/* Bahnschrift as installed, with its vertical metrics re-balanced. Out of the box it has 8% of
+   the font size above capitals and 21% below the baseline, so text sits high in every line box
+   (most visible in buttons). 85.5 / 14.5 puts the same space above the caps (cap height 71%) as
+   below the baseline, so text is centred. Same glyphs, weights and widths. */
+@font-face {
+  font-family: "Bahnschrift Centred";
+  src: local("Bahnschrift");
+  font-weight: 300 700;
+  font-stretch: 75% 100%;
+  ascent-override: 85.5%;
+  descent-override: 14.5%;
+  line-gap-override: 0%;
+}
 
-  --sans: "Bahnschrift", "DIN Alternate", "Arial Nova", "Segoe UI", system-ui, sans-serif;
+/* Dark by default, built from the app's own colours (window #17171A, frames #43434D) and the
+   purple accent the screenshots use. A light theme is one click away (data-theme="light"). */
+:root {
+  color-scheme: dark;
+  --page: #1d1d21;
+  --panel: #25252b;      /* a step up from the page: notice band, asides */
+  --ink: #e8e8ec;
+  --muted: #a6a6b1;
+  --rule: #3b3b45;
+  --link: #b197ff;       /* the accent mixed with white, like the app's accent text */
+  --btn: #7d3eff;
+  --btn-hover: #8f58ff;
+  --btn-active: #6a2ee6;
+  --code-bg: rgba(255, 255, 255, 0.08);
+  --shadow: 0 22px 48px -22px rgba(0, 0, 0, 0.7);
+  --win-edge: rgba(255, 255, 255, 0.04);
+
+  /* The app's window: the same in both themes */
+  --app-bg: #17171a;
+  --app-frame: #43434d;
+  --app-text: #e3e3e8;
+  --app-dim: #9e9ea9;
+  --app-accent: #7d3eff;
+  --app-accent-soft: rgba(125, 62, 255, 0.4);
+  --app-accent-hover: rgba(125, 62, 255, 0.7);
+  --app-title: #3f1f80;  /* ImGui's active title bar: the accent at half brightness */
+
+  --sans: "Bahnschrift Centred", "Bahnschrift", "DIN Alternate", "Arial Nova", "Segoe UI", system-ui, sans-serif;
   --mono: "Cascadia Mono", Consolas, "SF Mono", monospace;
 
   /* 4:3 scale from 17px */
@@ -27,9 +55,23 @@
   --gutter: clamp(1.25rem, 4vw, 2.5rem);
 }
 
-*, *::before, *::after { box-sizing: border-box; }
+:root[data-theme="light"] {
+  color-scheme: light;
+  --page: #d9dbde;       /* neutral texture-viewer grey */
+  --panel: #f0f1f2;
+  --ink: #1e2126;
+  --muted: #4c525b;
+  --rule: #b9bdc3;
+  --link: #5b27cf;       /* the accent, darkened for text on light */
+  --btn: #6a2ee6;
+  --btn-hover: #5a24c9;
+  --btn-active: #4b1ca8;
+  --code-bg: rgba(30, 33, 38, 0.07);
+  --shadow: 0 18px 40px -18px rgba(20, 24, 30, 0.55);
+  --win-edge: rgba(255, 255, 255, 0.5);
+}
 
-html { color-scheme: light; }
+*, *::before, *::after { box-sizing: border-box; }
 
 body {
   margin: 0;
@@ -65,7 +107,7 @@ code, pre { font-family: var(--mono); font-size: 0.88em; }
 
 code {
   padding: 0.05em 0.3em;
-  background: rgba(30, 33, 38, 0.07);
+  background: var(--code-bg);
   border-radius: 3px;
   white-space: nowrap;
 }
@@ -89,7 +131,7 @@ code {
   position: absolute;
   left: 1rem; top: -3rem;
   padding: 0.5rem 0.9rem;
-  background: var(--ink);
+  background: var(--btn);
   color: #fff;
   z-index: 10;
 }
@@ -100,15 +142,15 @@ code {
 .btn {
   display: inline-block;
   padding: 0.8rem 1.35rem;
-  background: var(--link);
+  background: var(--btn);
   color: #fff;
   font-weight: 600;
   text-decoration: none;
   border-radius: 4px;
   transition: background-color 120ms;
 }
-.btn:hover { background: #1856ab; }
-.btn:active { background: #13478f; }
+.btn:hover { background: var(--btn-hover); }
+.btn:active { background: var(--btn-active); }
 
 .btn-small { padding: 0.45rem 0.9rem; }
 
@@ -143,8 +185,26 @@ code {
 .top-nav a:not(.btn) { color: var(--ink); text-decoration: none; }
 .top-nav a:not(.btn):hover { text-decoration: underline; }
 
+.theme-toggle {
+  padding: 0.4rem 0.7rem;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: var(--s-1);
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.theme-toggle:hover { color: var(--ink); border-color: var(--muted); }
+
 @media (max-width: 760px) {
   .top-nav a:not(.btn) { display: none; }
+  .top-nav { gap: 0.75rem; }
+}
+
+/* Phones: the hero's own Download button is right below, so the header keeps just the toggle */
+@media (max-width: 420px) {
+  .top-nav .btn { display: none; }
 }
 
 /* Hero */
@@ -192,14 +252,14 @@ code {
   color: var(--app-text);
   border: 1px solid var(--app-frame);
   border-radius: 6px;
-  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.5) inset, 0 18px 40px -18px rgba(20, 24, 30, 0.55);
+  box-shadow: 0 1px 0 var(--win-edge) inset, var(--shadow);
   overflow: hidden;
   font-size: 0.95rem;
 }
 
 .win-title {
   padding: 0.45rem 0.8rem;
-  background: #214a7d; /* ImGui's active title bar: the accent at half brightness */
+  background: var(--app-title);
   font-weight: 600;
 }
 
@@ -246,11 +306,11 @@ code {
   display: block;
   padding: 0.4rem 0.5rem;
   text-align: center;
-  background: rgba(66, 150, 250, 0.4);
+  background: var(--app-accent-soft);
   border-radius: 3px;
   transition: background-color 100ms;
 }
-.modes label:hover span { background: rgba(66, 150, 250, 0.7); }
+.modes label:hover span { background: var(--app-accent-hover); }
 .modes input:checked + span { background: var(--app-accent); color: #fff; }
 .modes input:focus-visible + span { outline: 2px solid #fff; outline-offset: 2px; }
 
@@ -363,23 +423,39 @@ code {
   color: var(--muted);
 }
 
-/* Screenshot slot (commented out in index.html until there is a screenshot) */
+/* Screenshots: the Mods tab large, Dumps and Settings beside each other below it */
 
-.shot figure { margin: 0; }
+.shots {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 2rem 1.5rem;
+  margin: 2rem 0 0;
+}
+
+.shot { margin: 0; }
+.shot-main { grid-column: 1 / -1; }
+
+.shot a { display: block; border-radius: 6px; }
 
 .shot img {
   display: block;
   width: 100%;
   height: auto;
+  background: var(--app-bg);
   border: 1px solid var(--app-frame);
   border-radius: 6px;
-  box-shadow: 0 18px 40px -22px rgba(20, 24, 30, 0.55);
+  box-shadow: var(--shadow);
 }
 
 .shot figcaption {
-  margin-top: 0.8rem;
+  margin-top: 0.75rem;
+  max-width: 40rem;
   font-size: var(--s-1);
   color: var(--muted);
+}
+
+@media (max-width: 640px) {
+  .shots { grid-template-columns: 1fr; gap: 1.5rem; }
 }
 
 /* Steps: a real sequence, so numbered */

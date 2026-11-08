@@ -17,26 +17,20 @@ is a screenshot, a few GitHub settings and flipping the repo public.
       the footer has the "not affiliated" line.
 - [x] **Look through the git history.** Checked all commits on 2026-11-08: no personal paths, no
       keys or tokens, no deleted files that would resurface, no committed binaries.
-- [ ] **Your email in commit history.** Your Gmail address is the author email on the commits
-      up to 2.5.3, and it becomes visible when the repo is public. New commits in this repo now
-      use your GitHub noreply address (`git config user.email`). Still to decide: how to deal
-      with the old commits. Options:
-  - Leave them (most people do).
-  - Rewrite the history with `git filter-repo --mailmap`. This changes every commit hash, needs
-    a force-push, and the `v2.x` tags and releases would have to be recreated. Do it before the
-    repo is public, or not at all.
-  - Also tick GitHub → Settings → Emails → "Keep my email addresses private" and "Block command
-    line pushes that expose my email", so it can't happen again from another machine.
+- [x] **Your email in commit history.** Done on 2026-11-08: every commit and the `v2.5.3` tag
+      use the GitHub noreply address, and the repo was recreated so the old commits are gone from
+      GitHub too. Only 2.5.3 is released; older versions are kept locally. To keep it that way,
+      set the global git email to the noreply address and tick GitHub → Settings → Emails →
+      "Keep my email addresses private" and "Block command line pushes that expose my email".
 - [x] **Mind the DX12 limitation.** It's the first item in the site's "Before you start" panel.
 
 ## The website (keep it small)
 
 - [x] **One page** in `docs/site`: what it is, the DX11 and anti-cheat notes, setup steps,
       features, a download button pointing to GitHub Releases, and a link to the repo.
-- [ ] **A screenshot of the manager.** The page has a slot for it, commented out in
-      `docs/site/index.html`. Save it as `docs/site/screenshot.png` (about 1600px wide, ideally
-      showing only your own mod textures, no game art), set its width and height in the `<img>`,
-      and remove the comment markers.
+- [x] **Screenshots of the manager.** The Mods, Dumps and Settings tabs are in
+      `docs/site/img`, cropped to the app's content (no title bar or status bar), with dummy
+      folder paths in the Settings shot.
 - [ ] **Host on GitHub Pages.** `.github/workflows/pages.yml` publishes `docs/site` whenever it
       changes on `main` (or from the Actions tab). After the repo is public, turn it on in
       GitHub → Settings → Pages → Source: **GitHub Actions**, then run the "Website" workflow
@@ -51,8 +45,8 @@ and early users will find bugs you won't.
 
 ## What's left, in order
 
-1. Decide about the email in old commits (above). Rewriting has to happen before step 3.
-2. Add the screenshot to the site.
+1. ~~Remove the email from old commits.~~ Done.
+2. ~~Add the screenshots to the site.~~ Done: Mods, Dumps and Settings, with no personal paths.
 3. Make the repository public: GitHub → Settings → General → Danger Zone → Change visibility.
    The Download button on the site only works for visitors once this is done.
 4. Turn on GitHub Pages (Source: GitHub Actions) and run the "Website" workflow.

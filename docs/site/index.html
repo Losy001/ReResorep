@@ -7,6 +7,10 @@
   <meta name="description" content="A native rewrite of Resorep. Replace, dump, sort and tint Rainbow Six Siege textures with one small Windows app and a d3d11.dll proxy. Existing Resorep packs keep working.">
   <link rel="icon" href="favicon.ico">
   <link rel="stylesheet" href="style.css">
+  <script>
+    // Dark unless the visitor picked light before. Runs before the page draws, so it never flashes.
+    try { if (localStorage.getItem("theme") === "light") document.documentElement.dataset.theme = "light"; } catch (e) {}
+  </script>
 </head>
 <body>
   <a class="skip" href="#main">Skip to content</a>
@@ -21,6 +25,7 @@
         <a href="#setup">Setup</a>
         <a href="#features">Features</a>
         <a href="#resorep">Compared to Resorep</a>
+        <button class="theme-toggle" type="button" id="theme-toggle">Light theme</button>
         <a class="btn btn-small" href="https://github.com/SosigDOGGO/ReResorep/releases/latest">Download</a>
       </nav>
     </div>
@@ -99,17 +104,38 @@
       </div>
     </section>
 
-    <!-- Screenshot slot. Save a screenshot of the manager as docs/site/screenshot.png (about
-         1600px wide; best with only your own mod textures showing, no game art), set its real
-         width and height below, then remove the comment markers around this section.
-    <section class="wrap section shot" aria-label="The ReResorep manager">
-      <figure>
-        <img src="screenshot.png" width="1600" height="1000" loading="lazy"
-             alt="The ReResorep manager: the Mods tab with a sidebar of mods and categories, a grid of texture previews and the details panel">
-        <figcaption>The Mods tab: mods and categories on the left, previews in the middle, details on the right.</figcaption>
-      </figure>
+    <section id="look" class="wrap section" aria-labelledby="look-title">
+      <h2 id="look-title">What it looks like</h2>
+      <div class="shots">
+        <figure class="shot shot-main">
+          <a href="img/mods.webp">
+            <img src="img/mods.webp" width="1262" height="725" loading="lazy"
+                 alt="The Mods tab: a sidebar of mods with on/off checkboxes and active/total counts, a grid of four green test textures named by hash, and the details panel">
+          </a>
+          <figcaption>
+            The Mods tab. Each mod has an on/off checkbox and an active/total count; the grid shows
+            the textures of the one you pick.
+          </figcaption>
+        </figure>
+        <figure class="shot">
+          <a href="img/dumps.webp">
+            <img src="img/dumps.webp" width="1262" height="725" loading="lazy"
+                 alt="The Dumps tab: a grid of dumped textures, each with its hash and file size; one is selected and the details panel shows a large preview, its hash, a label field, its type (Color, Black Ice skin), size and format, with Replace with .dds and Add to mod buttons">
+          </a>
+          <figcaption>
+            The Dumps tab. Select a texture to see its type, size and format, label it, or replace it
+            with your own .dds.
+          </figcaption>
+        </figure>
+        <figure class="shot">
+          <a href="img/settings.webp">
+            <img src="img/settings.webp" width="1262" height="725" loading="lazy"
+                 alt="The Settings tab: default folders, Low impact mode, Mod creator mode, accent colour and other options">
+          </a>
+          <figcaption>Settings: folders, Low impact mode, Mod creator mode and your own accent colour.</figcaption>
+        </figure>
+      </div>
     </section>
-    -->
 
     <section id="setup" class="wrap section" aria-labelledby="setup-title">
       <h2 id="setup-title">Set it up in three steps</h2>
@@ -249,6 +275,20 @@
     </div>
   </footer>
 
+  <script>
+    (() => {
+      const btn = document.getElementById("theme-toggle");
+      const root = document.documentElement;
+      const label = () => { btn.textContent = root.dataset.theme === "light" ? "Dark theme" : "Light theme"; };
+      label();
+      btn.addEventListener("click", () => {
+        const light = root.dataset.theme !== "light";
+        if (light) root.dataset.theme = "light"; else delete root.dataset.theme;
+        try { localStorage.setItem("theme", light ? "light" : "dark"); } catch (e) {}
+        label();
+      });
+    })();
+  </script>
   <script src="tint.js"></script>
 </body>
 </html>
