@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ReResorep: texture replacer for DirectX 11 Rainbow Six Siege</title>
+  <meta name="description" content="A native rewrite of Resorep. Replace, dump, sort and tint Rainbow Six Siege textures with one small Windows app and a d3d11.dll proxy. Existing Resorep packs keep working.">
+  <link rel="icon" href="favicon.ico">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+
+  <header class="top">
+    <div class="wrap top-inner">
+      <a class="brand" href="#">
+        <img src="favicon.ico" alt="" width="28" height="28">
+        <span>ReResorep</span>
+      </a>
+      <nav class="top-nav" aria-label="Sections">
+        <a href="#setup">Setup</a>
+        <a href="#features">Features</a>
+        <a href="#resorep">Compared to Resorep</a>
+        <a class="btn btn-small" href="https://github.com/SosigDOGGO/ReResorep/releases/latest">Download</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="hero wrap">
+      <div class="hero-copy">
+        <h1>Swap Siege textures by&nbsp;hash</h1>
+        <p class="lede">
+          ReResorep is a native rewrite of Resorep, the DirectX&nbsp;11 texture replacer.
+          One small app finds, sorts and tints textures; a <code>d3d11.dll</code> proxy puts
+          your replacements into the game. Your existing Resorep packs keep working.
+        </p>
+        <div class="hero-actions">
+          <a class="btn" href="https://github.com/SosigDOGGO/ReResorep/releases/latest">Download ReResorep 2.5.2</a>
+          <p class="fine">Windows x64. No Java, runtime or VC++ redistributable needed.</p>
+        </div>
+      </div>
+
+      <figure class="tint-demo" aria-labelledby="tint-caption">
+        <div class="win">
+          <div class="win-title">Tint textures</div>
+          <div class="win-body">
+            <div class="tiles">
+              <div class="tile">
+                <canvas id="before" width="240" height="240" aria-label="Original texture: blue ice cracks"></canvas>
+                <span class="tile-name">Before</span>
+              </div>
+              <div class="tile">
+                <canvas id="after" width="240" height="240" aria-label="Tinted texture"></canvas>
+                <span class="tile-name">After</span>
+              </div>
+            </div>
+
+            <fieldset class="modes">
+              <legend class="sr-only">Tint mode</legend>
+              <label><input type="radio" name="mode" value="recolor" checked><span>Recolor</span></label>
+              <label><input type="radio" name="mode" value="colorize"><span>Colorize</span></label>
+              <label><input type="radio" name="mode" value="multiply"><span>Multiply</span></label>
+            </fieldset>
+
+            <label class="slider">
+              <span class="slider-name">Colour</span>
+              <input id="hue" class="hue" type="range" min="0" max="359" value="355">
+            </label>
+            <label class="slider">
+              <span class="slider-name">Strength</span>
+              <input id="strength" type="range" min="0" max="100" value="100">
+            </label>
+            <p id="mode-help" class="mode-help" aria-live="polite"></p>
+          </div>
+        </div>
+        <figcaption id="tint-caption">
+          Try it: this is the app's Tint dialog, running the same three blends on a generated texture.
+          In the app you right-click any mod textures and choose <strong>Tint…</strong>
+        </figcaption>
+      </figure>
+    </section>
+
+    <section class="notice-band" aria-labelledby="notice-title">
+      <div class="wrap notice">
+        <h2 id="notice-title">Before you start</h2>
+        <dl>
+          <dt>DirectX 11 only</dt>
+          <dd>
+            Siege from Y10S1 on, Siege X included, runs on DirectX 12 only, so the proxy works with
+            older builds that still have DirectX 11. DirectX 12 support isn't built yet.
+          </dd>
+          <dt>Offline setups</dt>
+          <dd>
+            Online Siege runs BattlEye, and a replacement <code>d3d11.dll</code> in the game
+            folder is the kind of thing it can flag. Use ReResorep for offline and modded setups.
+          </dd>
+        </dl>
+      </div>
+    </section>
+
+    <section id="setup" class="wrap section" aria-labelledby="setup-title">
+      <h2 id="setup-title">Set it up in three steps</h2>
+      <ol class="steps">
+        <li>
+          <h3>Add your game</h3>
+          <p>
+            Open the <strong>Games</strong> tab, choose <em>Add game…</em>, pick
+            <code>RainbowSix.exe</code> and press <em>Install</em>. If the folder already has a
+            <code>d3d11.dll</code>, like ReShade, it's kept and still loads.
+          </p>
+        </li>
+        <li>
+          <h3>Find the textures you want</h3>
+          <p>
+            Turn on <em>Mod creator mode</em> and <em>Dump textures</em> in <strong>Settings</strong>,
+            then play. The <strong>Dumps</strong> tab fills with the game's textures, each named by its hash.
+          </p>
+        </li>
+        <li>
+          <h3>Replace them</h3>
+          <p>
+            Select a dump and choose <em>Replace with .dds…</em>, or drag <code>.dds</code> files
+            onto the window. Changes reach a running game within about a second.
+          </p>
+        </li>
+      </ol>
+      <p class="aside">
+        Just playing? Turn on <strong>Low impact mode</strong>. The proxy then only replaces
+        textures and reads your mods once when the game starts.
+      </p>
+    </section>
+
+    <section id="features" class="wrap section" aria-labelledby="features-title">
+      <h2 id="features-title">What it does</h2>
+      <dl class="features">
+        <div class="feature feature-wide">
+          <dt>Mods and categories</dt>
+          <dd>
+            <p>
+              Each folder in your modded folder is a mod, and each folder inside it is a category.
+              Turn any texture, category or whole mod on or off. Files are never moved, so turning
+              something back on restores it exactly.
+            </p>
+<pre class="tree" aria-label="Example modded folder"><code>modded/
+  12345.dds      <span>loose texture</span>
+  Ash Elite/     <span>mod</span>
+    Uniform/     <span>category</span>
+      2233445566.dds
+    Weapons/     <span>category</span>
+      3344556677.dds</code></pre>
+          </dd>
+        </div>
+        <div class="feature">
+          <dt>Big dump folders, sorted</dt>
+          <dd>
+            Sort by hash, name, date, size, resolution or format. Name any hash with your own label.
+            Hide normal maps and grayscale masks, which are detected in the background.
+          </dd>
+        </div>
+        <div class="feature">
+          <dt>Find its normal map</dt>
+          <dd>
+            Right-click a texture to find its normal map or similar textures, ranked by matching
+            detail, size and when they were dumped.
+          </dd>
+        </div>
+        <div class="feature">
+          <dt>Share mods as a zip</dt>
+          <dd>
+            Export a mod with its categories, on/off choices and labels. Importing only ever unpacks
+            <code>.dds</code> files into your modded folder, and checks every file.
+          </dd>
+        </div>
+        <div class="feature">
+          <dt>Several Siege builds</dt>
+          <dd>
+            Builds are told apart by the exe's SHA-256. Give a build its own folders, or mark a mod
+            as made for one build so the others skip it.
+          </dd>
+        </div>
+        <div class="feature">
+          <dt>Damaged copies won't run</dt>
+          <dd>
+            The app and the proxy check their own checksum when they start. A broken proxy still
+            lets the game start but changes nothing, and <em>Repair</em> installs a fresh copy.
+          </dd>
+        </div>
+        <div class="feature">
+          <dt>Nothing phones home</dt>
+          <dd>
+            No analytics and no update check. The original's Google Analytics and version ping are gone.
+          </dd>
+        </div>
+      </dl>
+    </section>
+
+    <section id="resorep" class="wrap section" aria-labelledby="resorep-title">
+      <h2 id="resorep-title">Compared to Resorep 1.7</h2>
+      <p class="section-lede">
+        Mods made for Resorep work unchanged: <code>&lt;hash&gt;.dds</code>,
+        <code>&lt;hash&gt;~name.dds</code>, encrypted <code>resorep1</code> packs and the ±2 hash
+        tolerance. What's different is underneath.
+      </p>
+      <div class="table-scroll" tabindex="0" role="region" aria-label="Comparison table">
+        <table>
+          <thead>
+            <tr><th scope="col"></th><th scope="col">Resorep 1.7</th><th scope="col">ReResorep</th></tr>
+          </thead>
+          <tbody>
+            <tr><th scope="row">App</th><td data-label="Resorep 1.7">Java 8 Swing app, about 10&nbsp;MB</td><td data-label="ReResorep">Native exe with texture previews</td></tr>
+            <tr><th scope="row">Finding a mod</th><td data-label="Resorep 1.7">Lists the folder on every texture, up to 5 times</td><td data-label="ReResorep">Index built once, kept fresh by a folder watcher</td></tr>
+            <tr><th scope="row">Dumping</th><td data-label="Resorep 1.7">Writes the file while the game waits</td><td data-label="ReResorep">Copies, then writes in the background</td></tr>
+            <tr><th scope="row">Real <code>d3d11.dll</code></th><td data-label="Resorep 1.7">A copy placed in the game folder</td><td data-label="ReResorep">Loads Windows' own, so it never goes stale</td></tr>
+            <tr><th scope="row">Sub-folders</th><td data-label="Resorep 1.7">Ignored</td><td data-label="ReResorep">Mods and categories you can turn on and off</td></tr>
+            <tr><th scope="row">Analytics</th><td data-label="Resorep 1.7">Google Analytics and a version check</td><td data-label="ReResorep">None</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <div class="wrap foot-inner">
+      <p>
+        Made by sosigdoggo. Built on Resorep by RayWing (2017), Dear ImGui by Omar Cornut and
+        contributors, and Blowfish by Bruce Schneier. No Resorep code is included.
+      </p>
+      <p>
+        ReResorep is a fan-made modding tool, not affiliated with or endorsed by Ubisoft or any
+        game developer.
+      </p>
+      <p><a href="https://github.com/SosigDOGGO/ReResorep">Source on GitHub</a></p>
+    </div>
+  </footer>
+
+  <script src="tint.js"></script>
+</body>
+</html>
