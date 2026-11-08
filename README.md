@@ -274,4 +274,5 @@ RayWing, Dear ImGui (MIT) and Blowfish.
 
 ReResorep is free software under the [GNU General Public License v3.0](LICENSE). You can use,
 change and share it; if you share a changed version, it has to stay under the GPL with its source
-available. Dear ImGui in `third_party/imgui` keeps its own MIT license.
+available. Dear ImGui in `third_party/imgui` keeps its own MIT license. The app's **About** tab
+shows the license, with its full text and a link to the source.

@@ -12,6 +12,19 @@ target_compile_options(imgui PRIVATE /W0)
 
 # Licence texts compiled into the About tab, so they always ship with the exe.
 file(READ ${IMGUI}/LICENSE.txt IMGUI_LICENSE)
+# ReResorep's own licence. The GPL is longer than the 16 KB MSVC allows in one string literal,
+# so it goes in as several adjacent raw literals, which the compiler joins.
+file(READ ${PROJECT_SOURCE_DIR}/LICENSE GPL_TEXT)
+string(LENGTH "${GPL_TEXT}" GPL_LENGTH)
+set(GPL_LICENSE_LITERAL "")
+set(GPL_POS 0)
+while(GPL_POS LESS GPL_LENGTH)
+    string(SUBSTRING "${GPL_TEXT}" ${GPL_POS} 8000 GPL_CHUNK)
+    string(APPEND GPL_LICENSE_LITERAL "R\"RRLICENSE(${GPL_CHUNK})RRLICENSE\"\n")
+    math(EXPR GPL_POS "${GPL_POS} + 8000")
+endwhile()
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    ${IMGUI}/LICENSE.txt ${PROJECT_SOURCE_DIR}/LICENSE)
 configure_file(licenses.h.in ${RERESOREP_GENERATED}/licenses.h @ONLY)
 
 add_executable(ReResorep WIN32

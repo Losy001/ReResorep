@@ -3034,6 +3034,22 @@ void App::DrawAbout() {
     ImGui::Text("Made by %s.", RERESOREP_AUTHOR);
     ImGui::Spacing();
 
+    ImGui::SeparatorText("Licence");
+    ImGui::Text("Copyright (C) 2026 %s", RERESOREP_AUTHOR);
+    ImGui::TextWrapped("ReResorep is free software under the GNU General Public License, version 3. You can "
+                       "use, change and share it; if you share a changed version, it has to stay under the GPL "
+                       "with its source available. It comes with no warranty: see the licence for details.");
+    if (ImGui::SmallButton("Source code on GitHub")) OpenWithShell(L"https://github.com/SosigDOGGO/ReResorep");
+    ImGui::SameLine();
+    static bool showGpl = false;
+    if (ImGui::SmallButton(showGpl ? "Hide licence##gpl" : "Show licence##gpl")) showGpl = !showGpl;
+    if (showGpl) {
+        ImGui::BeginChild("gpl", ImVec2(0, ImGui::GetTextLineHeightWithSpacing() * 16), ImGuiChildFlags_Borders);
+        ImGui::TextUnformatted(kGplLicense);
+        ImGui::EndChild();
+    }
+    ImGui::Spacing();
+
     ImGui::SeparatorText("Credits");
     ImGui::TextColored(AccentTextColor(), "Resorep by RayWing (2017)");
     ImGui::TextWrapped("The original DirectX 11 texture replacer that ReResorep rewrites. To keep existing "

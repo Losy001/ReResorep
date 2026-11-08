@@ -1,8 +1,8 @@
 # Going open source + website: checklist
 
 Notes on publishing ReResorep as open source with a website, and what to do first.
-Status as of 2.5.3 (2026-11-08): everything that can be done in the repo is done. What's left
-is a screenshot, a few GitHub settings and flipping the repo public.
+Status as of 2026-11-08: done. The repo is public, 2.5.3 is released with the GPL, and the
+site is live at https://sosigdoggo.github.io/ReResorep/.
 
 ## Before making the repo public
 
@@ -31,10 +31,8 @@ is a screenshot, a few GitHub settings and flipping the repo public.
 - [x] **Screenshots of the manager.** The Mods, Dumps and Settings tabs are in
       `docs/site/img`, cropped to the app's content (no title bar or status bar), with dummy
       folder paths in the Settings shot.
-- [ ] **Host on GitHub Pages.** `.github/workflows/pages.yml` publishes `docs/site` whenever it
-      changes on `main` (or from the Actions tab). After the repo is public, turn it on in
-      GitHub → Settings → Pages → Source: **GitHub Actions**, then run the "Website" workflow
-      once. Pages on a private repo needs a paid plan, so until then the workflow fails if it runs.
+- [x] **Host on GitHub Pages.** `.github/workflows/pages.yml` publishes `docs/site` whenever it
+      changes on `main` (or from the Actions tab). Pages is set to "GitHub Actions".
 - [x] **Release assets, not committed binaries.** Releases attach the zip (exe, proxy, README,
       credits, notices, checksums) and its SHA-256; `packaging/proxy.sha256` pins the proxy.
 
@@ -47,7 +45,9 @@ and early users will find bugs you won't.
 
 1. ~~Remove the email from old commits.~~ Done.
 2. ~~Add the screenshots to the site.~~ Done: Mods, Dumps and Settings, with no personal paths.
-3. Make the repository public: GitHub → Settings → General → Danger Zone → Change visibility.
-   The Download button on the site only works for visitors once this is done.
-4. Turn on GitHub Pages (Source: GitHub Actions) and run the "Website" workflow.
-5. Optional: show the GPL in the app's **About** tab next to the other credits.
+3. ~~Make the repository public.~~ Done on 2026-11-08.
+4. ~~Turn on GitHub Pages and run the "Website" workflow.~~ Done: the site is live at
+   https://sosigdoggo.github.io/ReResorep/ and is the repo's homepage, with a description and
+   topics set.
+5. ~~Show the GPL in the app's **About** tab.~~ Done in 2.5.3: a Licence section with the
+   copyright line, a short summary, the full text and a link to the source.
