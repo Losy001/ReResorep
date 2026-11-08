@@ -289,6 +289,22 @@
       });
     })();
   </script>
+
+  <!-- Screenshot viewer: opened by gallery.js when a screenshot is clicked -->
+  <dialog class="viewer" id="viewer" aria-labelledby="viewer-caption">
+    <figure class="viewer-figure">
+      <img id="viewer-img" src="data:," alt="">
+      <figcaption id="viewer-caption"></figcaption>
+    </figure>
+    <div class="viewer-bar">
+      <button type="button" class="viewer-btn" data-step="-1">Previous</button>
+      <span class="viewer-count" id="viewer-count" aria-live="polite"></span>
+      <button type="button" class="viewer-btn" data-step="1">Next</button>
+      <button type="button" class="viewer-btn viewer-close" id="viewer-close">Close</button>
+    </div>
+  </dialog>
+
   <script src="tint.js"></script>
+  <script src="gallery.js"></script>
 </body>
 </html>

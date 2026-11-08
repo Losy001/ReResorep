@@ -435,7 +435,8 @@ code {
 .shot { margin: 0; }
 .shot-main { grid-column: 1 / -1; }
 
-.shot a { display: block; border-radius: 6px; }
+.shot a { display: block; border-radius: 6px; cursor: zoom-in; }
+.shot a:hover img { border-color: var(--app-accent); }
 
 .shot img {
   display: block;
@@ -456,6 +457,82 @@ code {
 
 @media (max-width: 640px) {
   .shots { grid-template-columns: 1fr; gap: 1.5rem; }
+}
+
+/* Screenshot viewer (gallery.js): the screenshot as large as the window allows, its caption,
+   and the controls underneath. */
+
+html:has(.viewer[open]) { overflow: hidden; }
+
+.viewer {
+  width: min(1262px, 100vw - 2rem);
+  max-width: none;
+  max-height: none;
+  margin: auto;
+  padding: 0;
+  background: none;
+  border: 0;
+  color: #e8e8ec;
+  overflow: visible;
+}
+
+.viewer::backdrop { background: rgba(10, 10, 12, 0.95); }
+
+.viewer[open] { animation: viewer-in 140ms ease-out; }
+@keyframes viewer-in { from { opacity: 0; transform: scale(0.985); } }
+
+.viewer-figure { margin: 0; }
+
+.viewer-figure img {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: calc(100vh - 9rem);
+  object-fit: contain;
+  background: var(--app-bg);
+  border: 1px solid var(--app-frame);
+  border-radius: 6px;
+}
+
+.viewer-figure figcaption {
+  margin-top: 0.75rem;
+  max-width: 46rem;
+  font-size: var(--s-1);
+  color: #b4b4be;
+}
+
+.viewer-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.85rem;
+}
+
+.viewer-count { min-width: 4.5rem; text-align: center; font-size: var(--s-1); color: #b4b4be; }
+
+.viewer-btn {
+  padding: 0.45rem 0.9rem;
+  background: rgba(255, 255, 255, 0.08);
+  color: #e8e8ec;
+  font: inherit;
+  font-size: var(--s-1);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.viewer-btn:hover { background: rgba(255, 255, 255, 0.16); }
+.viewer-btn:focus-visible { outline: 2px solid #b197ff; outline-offset: 2px; }
+
+.viewer-close { margin-left: auto; background: var(--btn); border-color: transparent; color: #fff; }
+.viewer-close:hover { background: var(--btn-hover); }
+
+/* Narrow phones: keep all four controls on one row */
+@media (max-width: 400px) {
+  .viewer { width: calc(100vw - 1.5rem); }
+  .viewer-bar { gap: 0.35rem; }
+  .viewer-count { min-width: 0; padding: 0 0.15rem; }
+  .viewer-btn { padding: 0.45rem 0.65rem; }
 }
 
 /* Steps: a real sequence, so numbered */
