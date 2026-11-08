@@ -76,8 +76,10 @@ ${IMGUI_LICENSE}")
 
 file(SHA256 "${DIR}/ReResorep.exe" EXE_HASH)
 file(SHA256 "${DIR}/proxy/d3d11.dll" DLL_HASH)
-# Plain \n: file(WRITE) already writes CRLF on Windows, so an explicit \r would double up.
-file(WRITE "${DIR}/SHA256SUMS.txt" "${EXE_HASH}  ReResorep.exe\n${DLL_HASH}  proxy/d3d11.dll\n")
+# Checksum files use Unix line endings, so `sha256sum -c` (Git Bash, Linux, WSL) can check them;
+# file(WRITE) would turn \n into CRLF on Windows. Notepad and PowerShell read LF fine.
+file(CONFIGURE OUTPUT "${DIR}/SHA256SUMS.txt" NEWLINE_STYLE UNIX
+     CONTENT "${EXE_HASH}  ReResorep.exe\n${DLL_HASH}  proxy/d3d11.dll\n")
 
 execute_process(COMMAND "${CMAKE_COMMAND}" -E tar cf "${ZIP}" --format=zip "${NAME}"
                 WORKING_DIRECTORY "${OUT}" RESULT_VARIABLE ZIP_RESULT)
@@ -85,7 +87,7 @@ if(NOT ZIP_RESULT EQUAL 0)
     message(FATAL_ERROR "Creating ${ZIP} failed")
 endif()
 file(SHA256 "${ZIP}" ZIP_HASH)
-file(WRITE "${ZIP}.sha256.txt" "${ZIP_HASH}  ${NAME}-win64.zip\n")
+file(CONFIGURE OUTPUT "${ZIP}.sha256.txt" NEWLINE_STYLE UNIX CONTENT "${ZIP_HASH}  ${NAME}-win64.zip\n")
 
 message(STATUS "Shipping folder: ${DIR}")
 message(STATUS "Release zip:     ${ZIP}")
